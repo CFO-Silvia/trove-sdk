@@ -1,0 +1,18 @@
+# Python
+python/.venv/
+python/dist/
+python/.pytest_cache/
+**/__pycache__/
+*.pyc
+.python-version
+
+# Node
+node/node_modules/
+node/dist/
+
+# Root artifacts (build leftovers, secrets)
+dist/
+.venv/
+.pytest_cache/
+.env
+.claude/

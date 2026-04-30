@@ -1,0 +1,37 @@
+{
+  "name": "trove-sdk",
+  "version": "0.1.0",
+  "description": "Node.js SDK for Trove — managed POSIX filesystem for AI agents",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test tests/*.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "trove",
+    "filesystem",
+    "ai",
+    "agents"
+  ],
+  "homepage": "https://trovefiles.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CFO-Silvia/trove-sdk"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^5.7"
+  }
+}
