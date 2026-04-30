@@ -114,9 +114,8 @@ def receive():
 The `body` argument MUST be the raw request bytes. Re-serializing JSON
 (e.g. `json.dumps(request.json)`) reorders keys and invalidates the HMAC.
 
-Runnable Flask and FastAPI receivers live in
-[`examples/receiver_flask.py`](examples/receiver_flask.py) and
-[`examples/receiver_fastapi.py`](examples/receiver_fastapi.py).
+A minimal subscribe + verify script lives in
+[`examples/webhook.py`](examples/webhook.py).
 
 ## API reference
 
