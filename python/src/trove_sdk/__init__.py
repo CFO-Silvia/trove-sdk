@@ -1,7 +1,16 @@
 from .admin import AsyncTroveAdminClient, TroveAdminClient
 from .client import AsyncTroveClient, TroveClient
 from .exceptions import TroveError
-from .models import FileResult, KeyCreated, KeyMetadata
+from .models import (
+    FileResult,
+    KeyCreated,
+    KeyMetadata,
+    WebhookCreated,
+    WebhookEvent,
+    WebhookMetadata,
+    WebhookTestResult,
+)
+from .webhooks import WebhookSignatureError, verify_webhook
 
 __all__ = [
     "TroveClient",
@@ -12,4 +21,10 @@ __all__ = [
     "FileResult",
     "KeyCreated",
     "KeyMetadata",
+    "WebhookCreated",
+    "WebhookEvent",
+    "WebhookMetadata",
+    "WebhookTestResult",
+    "WebhookSignatureError",
+    "verify_webhook",
 ]

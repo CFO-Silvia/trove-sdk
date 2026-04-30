@@ -3,7 +3,13 @@ from __future__ import annotations
 import httpx
 
 from .exceptions import TroveError
-from .models import KeyCreated, KeyMetadata
+from .models import (
+    KeyCreated,
+    KeyMetadata,
+    WebhookCreated,
+    WebhookMetadata,
+    WebhookTestResult,
+)
 
 _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
 
@@ -40,6 +46,40 @@ def _parse_key_created(d: dict) -> KeyCreated:
     )
 
 
+def _parse_webhook_metadata(d: dict) -> WebhookMetadata:
+    return WebhookMetadata(
+        webhook_id=d["webhook_id"],
+        url=d["url"],
+        events=d.get("events", ["*"]),
+        namespace=d.get("namespace"),
+        description=d.get("description"),
+        enabled=d.get("enabled", True),
+        created_at=d.get("created_at", ""),
+    )
+
+
+def _parse_webhook_created(d: dict) -> WebhookCreated:
+    return WebhookCreated(
+        webhook_id=d["webhook_id"],
+        url=d["url"],
+        events=d.get("events", ["*"]),
+        namespace=d.get("namespace"),
+        description=d.get("description"),
+        enabled=d.get("enabled", True),
+        created_at=d.get("created_at", ""),
+        signing_secret=d["signing_secret"],
+    )
+
+
+def _parse_webhook_test_result(d: dict) -> WebhookTestResult:
+    return WebhookTestResult(
+        ok=bool(d.get("ok")),
+        event_id=d.get("event_id", ""),
+        status=d.get("status"),
+        error=d.get("error"),
+    )
+
+
 class TroveAdminClient:
     """Synchronous client for Trove key management (requires admin key or service secret)."""
 
@@ -61,6 +101,9 @@ class TroveAdminClient:
     def _keys_url(self) -> str:
         return f"/v1/workspaces/{self._workspace_id}/keys"
 
+    def _webhooks_url(self) -> str:
+        return f"/v1/workspaces/{self._workspace_id}/webhooks"
+
     def create_key(self, name: str, *, namespace: str | None = None) -> KeyCreated:
         """Mint a namespace-scoped workspace key for a customer."""
         resp = self._http.post(
@@ -78,6 +121,42 @@ class TroveAdminClient:
     def revoke_key(self, key_id: str) -> None:
         resp = self._http.delete(f"{self._keys_url()}/{key_id}")
         _raise_for(resp)
+
+    def create_webhook(
+        self,
+        url: str,
+        *,
+        events: list[str] | None = None,
+        namespace: str | None = None,
+        description: str | None = None,
+    ) -> WebhookCreated:
+        """Subscribe a URL to workspace events. Signing secret is shown once."""
+        resp = self._http.post(
+            self._webhooks_url(),
+            json={
+                "url": url,
+                "events": events or ["*"],
+                "namespace": namespace,
+                "description": description,
+            },
+        )
+        _raise_for(resp)
+        return _parse_webhook_created(resp.json())
+
+    def list_webhooks(self) -> list[WebhookMetadata]:
+        resp = self._http.get(self._webhooks_url())
+        _raise_for(resp)
+        return [_parse_webhook_metadata(w) for w in resp.json().get("webhooks", [])]
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        resp = self._http.delete(f"{self._webhooks_url()}/{webhook_id}")
+        _raise_for(resp)
+
+    def test_webhook(self, webhook_id: str) -> WebhookTestResult:
+        """Fire a `webhook.test` event at the endpoint and report what came back."""
+        resp = self._http.post(f"{self._webhooks_url()}/{webhook_id}/test")
+        _raise_for(resp)
+        return _parse_webhook_test_result(resp.json())
 
     def close(self) -> None:
         self._http.close()
@@ -110,6 +189,9 @@ class AsyncTroveAdminClient:
     def _keys_url(self) -> str:
         return f"/v1/workspaces/{self._workspace_id}/keys"
 
+    def _webhooks_url(self) -> str:
+        return f"/v1/workspaces/{self._workspace_id}/webhooks"
+
     async def create_key(self, name: str, *, namespace: str | None = None) -> KeyCreated:
         resp = await self._http.post(
             self._keys_url(),
@@ -126,6 +208,40 @@ class AsyncTroveAdminClient:
     async def revoke_key(self, key_id: str) -> None:
         resp = await self._http.delete(f"{self._keys_url()}/{key_id}")
         _raise_for(resp)
+
+    async def create_webhook(
+        self,
+        url: str,
+        *,
+        events: list[str] | None = None,
+        namespace: str | None = None,
+        description: str | None = None,
+    ) -> WebhookCreated:
+        resp = await self._http.post(
+            self._webhooks_url(),
+            json={
+                "url": url,
+                "events": events or ["*"],
+                "namespace": namespace,
+                "description": description,
+            },
+        )
+        _raise_for(resp)
+        return _parse_webhook_created(resp.json())
+
+    async def list_webhooks(self) -> list[WebhookMetadata]:
+        resp = await self._http.get(self._webhooks_url())
+        _raise_for(resp)
+        return [_parse_webhook_metadata(w) for w in resp.json().get("webhooks", [])]
+
+    async def delete_webhook(self, webhook_id: str) -> None:
+        resp = await self._http.delete(f"{self._webhooks_url()}/{webhook_id}")
+        _raise_for(resp)
+
+    async def test_webhook(self, webhook_id: str) -> WebhookTestResult:
+        resp = await self._http.post(f"{self._webhooks_url()}/{webhook_id}/test")
+        _raise_for(resp)
+        return _parse_webhook_test_result(resp.json())
 
     async def aclose(self) -> None:
         await self._http.aclose()
