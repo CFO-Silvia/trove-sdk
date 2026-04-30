@@ -64,6 +64,60 @@ with TroveAdminClient(api_key="trove-sk-admin-...", workspace_id="ws-...") as ad
     admin.revoke_key(key.key_id)
 ```
 
+### Webhooks
+
+Subscribe a URL to filesystem and auth events. Trove signs every delivery with
+HMAC-SHA256; use `verify_webhook` to validate the signature in your receiver.
+
+#### Register an endpoint
+
+```python
+from trove_sdk import TroveAdminClient
+
+with TroveAdminClient(api_key="trove-sk-admin-...", workspace_id="ws-...") as admin:
+    hook = admin.create_webhook(
+        url="https://api.example.com/trove/events",
+        events=["file.written", "file.deleted", "exec.completed"],
+        # namespace="alice",  # optional — only fire for one customer
+    )
+    print(hook.signing_secret)  # save this — shown once
+```
+
+Available events: `file.written`, `file.deleted`, `exec.completed`,
+`workspace.created`, `key.created`, `key.revoked`. Pass `events=["*"]`
+(or omit) to subscribe to all of them, including future ones.
+
+#### Receive an event (Flask)
+
+```python
+import os
+from flask import Flask, request, abort
+from trove_sdk import verify_webhook, WebhookSignatureError
+
+app = Flask(__name__)
+SECRET = os.environ["TROVE_WEBHOOK_SECRET"]
+
+@app.post("/trove/events")
+def receive():
+    try:
+        event = verify_webhook(
+            secret=SECRET,
+            body=request.get_data(),  # raw bytes — DO NOT use request.json
+            signature_header=request.headers["X-Trove-Signature"],
+        )
+    except WebhookSignatureError:
+        abort(400)
+    print(f"{event.type}: {event.data}")
+    return "", 204
+```
+
+The `body` argument MUST be the raw request bytes. Re-serializing JSON
+(e.g. `json.dumps(request.json)`) reorders keys and invalidates the HMAC.
+
+Runnable Flask and FastAPI receivers live in
+[`examples/receiver_flask.py`](examples/receiver_flask.py) and
+[`examples/receiver_fastapi.py`](examples/receiver_fastapi.py).
+
 ## API reference
 
 ### `TroveClient(api_key, namespace, *, base_url?)`
@@ -84,9 +138,21 @@ with TroveAdminClient(api_key="trove-sk-admin-...", workspace_id="ws-...") as ad
 | `create_key(name, *, namespace?)` | Mint a new workspace key, optionally scoped to a namespace. |
 | `list_keys()` | List all active keys for the workspace. |
 | `revoke_key(key_id)` | Revoke a key immediately. |
+| `create_webhook(url, *, events?, namespace?, description?)` | Subscribe a URL to events. Returns a `WebhookCreated` (signing secret shown once). |
+| `list_webhooks()` | List all registered webhook endpoints. |
+| `delete_webhook(webhook_id)` | Remove an endpoint. |
+| `test_webhook(webhook_id)` | Fire a `webhook.test` event and return the delivery result. |
 
 `AsyncTroveAdminClient` mirrors the same interface with `async`/`await`.
+
+### `verify_webhook(*, secret, body, signature_header, tolerance_seconds=300)`
+
+Validates a webhook delivery and returns the parsed `WebhookEvent`. Raises
+`WebhookSignatureError` on bad signature, missing fields, or stale timestamp
+(default tolerance: 5 minutes). Pass the raw request body — re-serialized JSON
+will not match the signature.
 
 ### Errors
 
 All errors raise `TroveError(message, status_code)`.
+`WebhookSignatureError` is a subclass raised by `verify_webhook`.
