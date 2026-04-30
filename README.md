@@ -11,7 +11,7 @@ Client libraries for [Trove](https://trovefiles.dev) — a managed POSIX filesys
 
 Trove gives your AI agent a persistent, cloud-backed filesystem it can use via shell commands — the same production-ready filesystem powering [Silvia](https://trovefiles.dev), available for your own app.
 
-Agents interact through familiar POSIX commands (`ls`, `cat`, `grep`, `cp`, …). Your backend controls access through scoped API keys, so each customer gets an isolated namespace with no cross-tenant access.
+Store any file type your agent touches: images for vision agents, PDFs for RAG pipelines, audio for transcription, CSVs for data agents. Agents interact through familiar POSIX commands (`ls`, `cat`, `grep`, `cp`, …). Your backend controls access through scoped API keys, so each customer gets an isolated namespace with no cross-tenant access.
 
 ## Quick example
 
@@ -19,17 +19,24 @@ Agents interact through familiar POSIX commands (`ls`, `cat`, `grep`, `cp`, …)
 from trove_sdk import TroveClient
 
 with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
-    client.exec("mkdir -p workspace/data")
-    client.write("workspace/data/result.json", '{"score": 0.9}')
-    print(client.exec("ls workspace/data/"))
+    # Upload an image, process it with shell tools
+    with open("chart.png", "rb") as f:
+        client.upload("workspace/chart.png", f)
+    print(client.exec("identify workspace/chart.png"))
+
+    # Write and run against any text format
+    client.write("workspace/data.csv", "name,score\nalice,0.9")
+    print(client.exec("awk -F, 'NR>1{print $2}' workspace/data.csv"))
 ```
 
 ```js
 import { TroveClient } from 'trove-sdk'
+import { readFile } from 'node:fs/promises'
 
 const client = new TroveClient('trove-sk-...', 'alice')
-await client.exec('mkdir -p workspace/data')
-await client.write('workspace/data/result.json', '{"score": 0.9}')
+const pdf = await readFile('report.pdf')
+await client.upload('workspace/report.pdf', pdf)
+await client.exec('pdftotext workspace/report.pdf -')
 ```
 
 ## Multi-tenant key management
