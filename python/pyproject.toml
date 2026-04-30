@@ -1,7 +1,8 @@
 [project]
 name = "trove-sdk"
-version = "0.1.1"
+version = "0.1.2"
 description = "Python SDK for Trove — managed POSIX filesystem for AI agents"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27",
