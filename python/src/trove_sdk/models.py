@@ -60,3 +60,12 @@ class WebhookEvent:
     namespace: str | None
     created_at: str
     data: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Snapshot:
+    snapshot_id: str
+    namespace: str
+    label: str | None
+    size_bytes: int
+    created_at: str

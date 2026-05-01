@@ -5,7 +5,7 @@ from typing import BinaryIO
 import httpx
 
 from .exceptions import TroveError
-from .models import FileResult
+from .models import FileResult, Snapshot
 
 _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
 
@@ -16,6 +16,16 @@ def _norm_path(path: str) -> str:
     if p.startswith("workspace/"):
         p = p[len("workspace/"):]
     return p
+
+
+def _parse_snapshot(d: dict) -> Snapshot:
+    return Snapshot(
+        snapshot_id=d["snapshot_id"],
+        namespace=d["namespace"],
+        label=d.get("label"),
+        size_bytes=d["size_bytes"],
+        created_at=d["created_at"],
+    )
 
 
 def _raise_for(response: httpx.Response) -> None:
@@ -74,6 +84,27 @@ class TroveClient:
         _raise_for(resp)
         return resp.json()["deleted"]
 
+    def create_snapshot(self, label: str | None = None) -> Snapshot:
+        """Tar the current namespace state and store it. Restorable for 30 days."""
+        resp = self._http.post("/v1/snapshots", json={"label": label})
+        _raise_for(resp)
+        return _parse_snapshot(resp.json())
+
+    def list_snapshots(self) -> list[Snapshot]:
+        resp = self._http.get("/v1/snapshots")
+        _raise_for(resp)
+        return [_parse_snapshot(s) for s in resp.json().get("snapshots", [])]
+
+    def restore_snapshot(self, snapshot_id: str) -> int:
+        """Wipe the namespace and restore from snapshot. Returns # files restored."""
+        resp = self._http.post(f"/v1/snapshots/{snapshot_id}/restore")
+        _raise_for(resp)
+        return resp.json().get("files_restored", 0)
+
+    def delete_snapshot(self, snapshot_id: str) -> None:
+        resp = self._http.delete(f"/v1/snapshots/{snapshot_id}")
+        _raise_for(resp)
+
     def close(self) -> None:
         self._http.close()
 
@@ -126,6 +157,25 @@ class AsyncTroveClient:
         resp = await self._http.post("/delete", json={"path": _norm_path(path)})
         _raise_for(resp)
         return resp.json()["deleted"]
+
+    async def create_snapshot(self, label: str | None = None) -> Snapshot:
+        resp = await self._http.post("/v1/snapshots", json={"label": label})
+        _raise_for(resp)
+        return _parse_snapshot(resp.json())
+
+    async def list_snapshots(self) -> list[Snapshot]:
+        resp = await self._http.get("/v1/snapshots")
+        _raise_for(resp)
+        return [_parse_snapshot(s) for s in resp.json().get("snapshots", [])]
+
+    async def restore_snapshot(self, snapshot_id: str) -> int:
+        resp = await self._http.post(f"/v1/snapshots/{snapshot_id}/restore")
+        _raise_for(resp)
+        return resp.json().get("files_restored", 0)
+
+    async def delete_snapshot(self, snapshot_id: str) -> None:
+        resp = await self._http.delete(f"/v1/snapshots/{snapshot_id}")
+        _raise_for(resp)
 
     async def aclose(self) -> None:
         await self._http.aclose()
