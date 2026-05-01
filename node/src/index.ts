@@ -7,6 +7,7 @@ export type {
   KeyMetadata,
   KeyCreated,
   FileResult,
+  Snapshot,
   WebhookMetadata,
   WebhookCreated,
   WebhookTestResult,

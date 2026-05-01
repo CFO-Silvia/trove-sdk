@@ -46,3 +46,11 @@ export interface WebhookEvent<T = Record<string, unknown>> {
   created_at:   string
   data:         T
 }
+
+export interface Snapshot {
+  snapshot_id: string
+  namespace:   string
+  label:       string | null
+  size_bytes:  number
+  created_at:  string
+}

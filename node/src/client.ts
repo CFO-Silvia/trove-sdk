@@ -1,5 +1,5 @@
 import { TroveError } from './error.js'
-import type { FileResult } from './types.js'
+import type { FileResult, Snapshot } from './types.js'
 
 const DEFAULT_BASE_URL = 'https://api.trovefiles.dev'
 
@@ -79,5 +79,43 @@ export class TroveClient {
     await raiseForStatus(res)
     const body = await res.json() as { deleted: string }
     return body.deleted
+  }
+
+  async createSnapshot(label?: string | null): Promise<Snapshot> {
+    const res = await fetch(`${this.baseUrl}/v1/snapshots`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({ label: label ?? null }),
+    })
+    await raiseForStatus(res)
+    return res.json() as Promise<Snapshot>
+  }
+
+  async listSnapshots(): Promise<Snapshot[]> {
+    const res = await fetch(`${this.baseUrl}/v1/snapshots`, {
+      method: 'GET',
+      headers: this.headers,
+    })
+    await raiseForStatus(res)
+    const body = await res.json() as { snapshots?: Snapshot[] }
+    return body.snapshots ?? []
+  }
+
+  async restoreSnapshot(snapshotId: string): Promise<number> {
+    const res = await fetch(`${this.baseUrl}/v1/snapshots/${snapshotId}/restore`, {
+      method: 'POST',
+      headers: this.headers,
+    })
+    await raiseForStatus(res)
+    const body = await res.json() as { files_restored?: number }
+    return body.files_restored ?? 0
+  }
+
+  async deleteSnapshot(snapshotId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/v1/snapshots/${snapshotId}`, {
+      method: 'DELETE',
+      headers: this.headers,
+    })
+    await raiseForStatus(res)
   }
 }
