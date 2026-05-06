@@ -24,6 +24,42 @@ class FileResult:
 
 
 @dataclass
+class ExecResult:
+    """Structured result of `exec_detailed` / `POST /v1/exec`.
+
+    `stdout` and `stderr` are kept separate (the legacy text endpoint
+    interleaves them on non-zero exits). `duration_ms` is wall-clock time
+    measured server-side — useful for spotting slow commands without
+    re-running them locally.
+    """
+    exit_code:   int
+    stdout:      str
+    stderr:      str
+    duration_ms: int
+
+
+@dataclass
+class FileInfo:
+    """One entry returned by `list_dir`."""
+    name: str
+    path: str
+    is_dir: bool
+    size_bytes: int | None
+    modified_at: str
+
+
+@dataclass
+class FileContent:
+    """Result of `read_text` / `read_bytes`."""
+    path: str
+    size_bytes: int
+    modified_at: str
+    encoding: str            # "utf-8" or "binary"
+    content: str | None      # None when encoding == "binary"
+    truncated: bool          # True when file exceeds the 1 MB preview cap
+
+
+@dataclass
 class WebhookMetadata:
     webhook_id: str
     url: str

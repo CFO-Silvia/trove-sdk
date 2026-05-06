@@ -6,6 +6,7 @@ push a command, watch its event land in the activity feed.
 
 from __future__ import annotations
 
+import json as _json
 import sys
 from datetime import datetime
 from pathlib import Path as LocalPath
@@ -71,31 +72,100 @@ def _fmt_local(iso: str) -> str:
 )
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
 @click.option("--namespace", "-n", default=None, help="Override the profile namespace.")
+@click.option(
+    "--json", "json_mode", is_flag=True,
+    help="Emit a single JSON line: {exit_code, stdout, stderr, duration_ms}.",
+)
 @click.pass_context
 @handle_errors
-def run(ctx: click.Context, command: tuple[str, ...], namespace: Optional[str]) -> None:
+def run(
+    ctx: click.Context,
+    command: tuple[str, ...],
+    namespace: Optional[str],
+    json_mode: bool,
+) -> None:
     """Run a shell command in the workspace and print its output.
 
+    \b
     Examples:
         trove run ls workspace/
         trove run wc -c workspace/notes.txt
         trove run "cat workspace/notes.txt | wc -l"
         trove run -n alice ls -la workspace/uploads/
+
+    The exit code of the remote command is propagated as the local exit code,
+    so `trove run "build" && trove run "deploy"` works the way you'd expect.
+    Remote stderr goes to local stderr; `--json` keeps everything in one
+    machine-readable line for piping into `jq`.
     """
     cmd = " ".join(command).strip()
     if not cmd:
         raise click.ClickException("empty command")
     client, _, _, _ = get_runtime_client(ctx, namespace)
     try:
-        # POST /exec returns text/plain (stdout, or `[exit N]` summary).
-        # Bump the timeout above the API's 30s exec cap so we don't race.
-        r = client.post("/exec", json={"command": cmd}, timeout=45.0)
+        # /v1/exec returns structured JSON so we can split stdout/stderr and
+        # surface the exit code without parsing the legacy `[exit N]` prefix.
+        # Bump the timeout above the API's 30 s exec cap so we don't race it.
+        r = client.post("/v1/exec", json={"command": cmd}, timeout=45.0)
+        if r.status_code == 404:
+            # Older server without /v1/exec — degrade to the text endpoint.
+            # Exit code can't be recovered cleanly here; we parse the leading
+            # `[exit N]` line if present and otherwise leave it at 0.
+            r = client.post("/exec", json={"command": cmd}, timeout=45.0)
+            r.raise_for_status()
+            text = r.text
+            exit_code = _parse_legacy_exit(text)
+            if json_mode:
+                # Best-effort split for old servers: we only have one stream.
+                payload = {
+                    "exit_code": exit_code,
+                    "stdout": text if exit_code == 0 else "",
+                    "stderr": text if exit_code != 0 else "",
+                    "duration_ms": 0,
+                }
+                click.echo(_json.dumps(payload))
+            else:
+                sys.stdout.write(text)
+                if text and not text.endswith("\n"):
+                    sys.stdout.write("\n")
+            ctx.exit(exit_code)
+            return  # pragma: no cover
+
         r.raise_for_status()
-        sys.stdout.write(r.text)
-        if r.text and not r.text.endswith("\n"):
-            sys.stdout.write("\n")
+        body = r.json()
+        exit_code = int(body.get("exit_code", 0))
+        out       = body.get("stdout", "") or ""
+        err       = body.get("stderr", "") or ""
+
+        if json_mode:
+            click.echo(_json.dumps({
+                "exit_code":   exit_code,
+                "stdout":      out,
+                "stderr":      err,
+                "duration_ms": int(body.get("duration_ms", 0)),
+            }))
+        else:
+            if out:
+                sys.stdout.write(out)
+                if not out.endswith("\n"):
+                    sys.stdout.write("\n")
+            if err:
+                sys.stderr.write(err)
+                if not err.endswith("\n"):
+                    sys.stderr.write("\n")
+
+        ctx.exit(exit_code)
     finally:
         client.close()
+
+
+_LEGACY_EXIT_RE = __import__("re").compile(r"^\[exit (\d+)\]")
+
+
+def _parse_legacy_exit(text: str) -> int:
+    """Extract N from a `[exit N]\n...` legacy-mode response. 0 if absent."""
+    m = _LEGACY_EXIT_RE.match(text or "")
+    return int(m.group(1)) if m else 0
 
 
 # ── ls ────────────────────────────────────────────────────────────────────────
@@ -307,5 +377,89 @@ def rm(
             r.raise_for_status()
             body = r.json()
             click.secho(f"deleted {body.get('deleted', p)}", fg="red")
+    finally:
+        client.close()
+
+
+# ── get ───────────────────────────────────────────────────────────────────────
+
+
+@click.command("get")
+@click.argument("remote")
+@click.argument(
+    "local",
+    type=click.Path(dir_okay=False, writable=True, path_type=LocalPath),
+    required=False,
+)
+@click.option("--namespace", "-n", default=None, help="Override the profile namespace.")
+@click.option(
+    "--force", "-f", is_flag=True,
+    help="Overwrite LOCAL if it already exists.",
+)
+@click.option(
+    "--stdout", "to_stdout", is_flag=True,
+    help="Write to stdout instead of a file (binary-safe; combine with `> file`).",
+)
+@click.pass_context
+@handle_errors
+def get(
+    ctx: click.Context,
+    remote: str,
+    local: Optional[LocalPath],
+    namespace: Optional[str],
+    force: bool,
+    to_stdout: bool,
+) -> None:
+    """Download a file from the workspace (binary-safe).
+
+    \b
+    Examples:
+        trove get workspace/report.pdf                  → ./report.pdf
+        trove get workspace/report.pdf reports/r.pdf
+        trove get workspace/img.png --stdout > img.png
+
+    Use this for any file `trove cat` refuses (binaries) or for pulling files
+    larger than the 1 MB text-preview cap. Server-capped at 100 MB; bigger
+    files arrive truncated and emit a warning to stderr.
+    """
+    if to_stdout and local is not None:
+        raise click.ClickException("pass --stdout OR a LOCAL path, not both")
+
+    client, _, _, _ = get_runtime_client(ctx, namespace)
+    try:
+        rel = _norm_remote(remote)
+        if not rel:
+            raise click.ClickException("remote path cannot be empty")
+        r = client.get(f"/files/{rel}", timeout=180.0)
+        if r.status_code == 404:
+            raise click.ClickException(f"not found: {remote}")
+        r.raise_for_status()
+        body = r.content
+        truncated = r.headers.get("X-Trove-Truncated") == "1"
+        full_size = r.headers.get("X-Trove-Size")
+
+        if to_stdout:
+            # Write raw bytes to stdout's underlying buffer (don't decode).
+            sys.stdout.buffer.write(body)
+        else:
+            target = local or LocalPath(rel.split("/")[-1] or "download")
+            if target.exists() and not force:
+                raise click.ClickException(
+                    f"{target} already exists. Pass --force to overwrite."
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+            click.secho(
+                f"downloaded {remote} → {target}  ({_fmt_bytes(len(body))})",
+                fg="green",
+            )
+
+        if truncated:
+            extra = f" of {_fmt_bytes(full_size)}" if full_size else ""
+            click.secho(
+                f"warning: response truncated{extra} — server cap exceeded.",
+                fg="yellow",
+                err=True,
+            )
     finally:
         client.close()

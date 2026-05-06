@@ -21,11 +21,18 @@ def _mask_key(api_key: str) -> str:
 
 @click.command()
 @click.option(
-    "--profile",
+    "--save-as",
     "profile_name",
-    default="default",
-    show_default=True,
-    help="Profile name to save under.",
+    default=None,
+    help="Profile name to save under (default: 'default').",
+)
+@click.option(
+    "--profile",
+    "legacy_profile_name",
+    default=None,
+    expose_value=True,
+    hidden=True,
+    help="Deprecated alias for --save-as.",
 )
 @click.option("--api-key", default=None, help="API key (or paste at the prompt).")
 @click.option(
@@ -40,9 +47,12 @@ def _mask_key(api_key: str) -> str:
     help="Default namespace for runtime commands (run/ls/cat/...).",
 )
 @click.option("--base-url", default=config.DEFAULT_BASE_URL, show_default=True)
+@click.pass_context
 @handle_errors
 def login(
-    profile_name: str,
+    ctx: click.Context,
+    profile_name: str | None,
+    legacy_profile_name: str | None,
     api_key: str | None,
     workspace_id: str | None,
     namespace: str | None,
@@ -53,7 +63,41 @@ def login(
     Get keys at https://trovefiles.dev/dashboard/keys. The CLI will call
     `/v1/me` to discover the workspace ID (and namespace lock, if any) so you
     only need to paste the API key.
+
+    \b
+    The profile to *save under* is set with `--save-as`. The root-level
+    `--profile` flag (`trove --profile staging ...`) selects an existing
+    profile for read commands; pass it to login and we'll fall back to using
+    it as the save-as name (with a deprecation note).
     """
+    # Resolve the profile name with this priority:
+    #   1. explicit --save-as
+    #   2. login's deprecated --profile (warn)
+    #   3. root-level --profile (warn — almost certainly user intent)
+    #   4. "default"
+    root_profile = ctx.obj.get("profile") if ctx.obj else None
+    if profile_name is None:
+        if legacy_profile_name is not None:
+            click.secho(
+                "warning: `trove login --profile X` is deprecated; "
+                "use `--save-as X` instead.",
+                fg="yellow", err=True,
+            )
+            profile_name = legacy_profile_name
+        elif root_profile is not None:
+            click.secho(
+                f"note: saving as '{root_profile}' (from root --profile). "
+                f"Pass `--save-as` explicitly to silence this.",
+                fg="yellow", err=True,
+            )
+            profile_name = root_profile
+        else:
+            profile_name = "default"
+    elif legacy_profile_name is not None and legacy_profile_name != profile_name:
+        raise click.ClickException(
+            f"--save-as ({profile_name!r}) and --profile ({legacy_profile_name!r}) disagree"
+        )
+
     if not api_key:
         click.echo("Get a key at https://trovefiles.dev/dashboard/keys.")
         api_key = click.prompt("API key", hide_input=True).strip()

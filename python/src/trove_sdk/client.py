@@ -5,7 +5,7 @@ from typing import BinaryIO
 import httpx
 
 from .exceptions import TroveError
-from .models import FileResult, Snapshot
+from .models import ExecResult, FileContent, FileInfo, FileResult, Snapshot
 
 _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
 
@@ -25,6 +25,36 @@ def _parse_snapshot(d: dict) -> Snapshot:
         label=d.get("label"),
         size_bytes=d["size_bytes"],
         created_at=d["created_at"],
+    )
+
+
+def _parse_file_info(d: dict) -> FileInfo:
+    return FileInfo(
+        name=d["name"],
+        path=d["path"],
+        is_dir=d["is_dir"],
+        size_bytes=d.get("size_bytes"),
+        modified_at=d["modified_at"],
+    )
+
+
+def _parse_exec_result(d: dict) -> ExecResult:
+    return ExecResult(
+        exit_code=int(d["exit_code"]),
+        stdout=d.get("stdout", "") or "",
+        stderr=d.get("stderr", "") or "",
+        duration_ms=int(d.get("duration_ms", 0)),
+    )
+
+
+def _parse_file_content(d: dict) -> FileContent:
+    return FileContent(
+        path=d["path"],
+        size_bytes=d["size_bytes"],
+        modified_at=d["modified_at"],
+        encoding=d["encoding"],
+        content=d.get("content"),
+        truncated=d.get("truncated", False),
     )
 
 
@@ -58,10 +88,28 @@ class TroveClient:
         )
 
     def exec(self, command: str) -> str:
-        """Run a shell command in the workspace. Returns stdout (or error output)."""
+        """Run a shell command in the workspace. Returns stdout (or error output).
+
+        For agent loops where you need to branch on exit code or read stderr
+        cleanly, prefer :meth:`exec_detailed` — this method preserves the
+        legacy text response (`[exit N]\nstderr\nstdout` on non-zero) for
+        backwards compatibility.
+        """
         resp = self._http.post("/exec", json={"command": command})
         _raise_for(resp)
         return resp.text
+
+    def exec_detailed(self, command: str) -> ExecResult:
+        """Run a shell command and return structured output.
+
+        Hits the JSON-mode `POST /v1/exec` endpoint, so `exit_code`, `stdout`,
+        and `stderr` come back as separate fields. The 30-second server-side
+        timeout still applies; on timeout the SDK raises :class:`TroveError`
+        with status_code=408.
+        """
+        resp = self._http.post("/v1/exec", json={"command": command})
+        _raise_for(resp)
+        return _parse_exec_result(resp.json())
 
     def write(self, path: str, content: str) -> FileResult:
         """Write a UTF-8 text file at path (created or overwritten)."""
@@ -83,6 +131,37 @@ class TroveClient:
         resp = self._http.post("/delete", json={"path": _norm_path(path)})
         _raise_for(resp)
         return resp.json()["deleted"]
+
+    def list_dir(self, path: str = "workspace/") -> list[FileInfo]:
+        """List a directory in the workspace. Directories first, then files, alphabetical."""
+        resp = self._http.get("/v1/files", params={"path": path})
+        _raise_for(resp)
+        return [_parse_file_info(e) for e in resp.json().get("entries", [])]
+
+    def read_text(self, path: str) -> str:
+        """Read a UTF-8 text file. Caps at 1 MB; raises TroveError on binary content."""
+        info = self.read_file(path)
+        if info.encoding == "binary":
+            raise TroveError(f"{path} is binary; use read_bytes() instead", status_code=415)
+        return info.content or ""
+
+    def read_file(self, path: str) -> FileContent:
+        """Read a file's metadata + content (UTF-8 or 'binary' marker)."""
+        resp = self._http.get("/v1/files/content", params={"path": path})
+        _raise_for(resp)
+        return _parse_file_content(resp.json())
+
+    def read_bytes(self, path: str) -> bytes:
+        """Download a file's raw bytes. Binary-safe — use this for images,
+        PDFs, audio, anything `read_text` would refuse.
+
+        The server caps the response at the same size as `upload` (100 MB).
+        Larger files come back truncated; check
+        ``response.headers["X-Trove-Truncated"]`` if you need to know.
+        """
+        resp = self._http.get(f"/files/{_norm_path(path)}")
+        _raise_for(resp)
+        return resp.content
 
     def create_snapshot(self, label: str | None = None) -> Snapshot:
         """Tar the current namespace state and store it. Restorable for 30 days."""
@@ -140,6 +219,11 @@ class AsyncTroveClient:
         _raise_for(resp)
         return resp.text
 
+    async def exec_detailed(self, command: str) -> ExecResult:
+        resp = await self._http.post("/v1/exec", json={"command": command})
+        _raise_for(resp)
+        return _parse_exec_result(resp.json())
+
     async def write(self, path: str, content: str) -> FileResult:
         resp = await self._http.post("/write", json={"path": _norm_path(path), "content": content})
         _raise_for(resp)
@@ -157,6 +241,27 @@ class AsyncTroveClient:
         resp = await self._http.post("/delete", json={"path": _norm_path(path)})
         _raise_for(resp)
         return resp.json()["deleted"]
+
+    async def list_dir(self, path: str = "workspace/") -> list[FileInfo]:
+        resp = await self._http.get("/v1/files", params={"path": path})
+        _raise_for(resp)
+        return [_parse_file_info(e) for e in resp.json().get("entries", [])]
+
+    async def read_text(self, path: str) -> str:
+        info = await self.read_file(path)
+        if info.encoding == "binary":
+            raise TroveError(f"{path} is binary; use read_bytes() instead", status_code=415)
+        return info.content or ""
+
+    async def read_file(self, path: str) -> FileContent:
+        resp = await self._http.get("/v1/files/content", params={"path": path})
+        _raise_for(resp)
+        return _parse_file_content(resp.json())
+
+    async def read_bytes(self, path: str) -> bytes:
+        resp = await self._http.get(f"/files/{_norm_path(path)}")
+        _raise_for(resp)
+        return resp.content
 
     async def create_snapshot(self, label: str | None = None) -> Snapshot:
         resp = await self._http.post("/v1/snapshots", json={"label": label})

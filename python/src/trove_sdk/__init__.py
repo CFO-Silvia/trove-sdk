@@ -2,6 +2,9 @@ from .admin import AsyncTroveAdminClient, TroveAdminClient
 from .client import AsyncTroveClient, TroveClient
 from .exceptions import TroveError
 from .models import (
+    ExecResult,
+    FileContent,
+    FileInfo,
     FileResult,
     KeyCreated,
     KeyMetadata,
@@ -19,6 +22,9 @@ __all__ = [
     "TroveAdminClient",
     "AsyncTroveAdminClient",
     "TroveError",
+    "ExecResult",
+    "FileContent",
+    "FileInfo",
     "FileResult",
     "KeyCreated",
     "KeyMetadata",

@@ -24,13 +24,22 @@ then drive your workspace from the terminal:
 # the key, so you only paste one secret. --namespace is optional.
 trove login --api-key trove-sk-... --namespace alice
 
+# Save under a non-default profile name:
+trove login --save-as staging --api-key trove-sk-...
+trove --profile staging tail        # use it later
+
 # Filesystem (mirrors the SDK)
-trove run "ls workspace/"          # POST /exec
+trove run "ls workspace/"          # POST /v1/exec  (exit code propagates!)
+trove run --json "build"           # one JSON line: {exit_code,stdout,stderr,...}
 trove ls workspace/                # GET  /v1/files
 trove cat workspace/notes.txt      # GET  /v1/files/content
 trove put report.pdf workspace/    # PUT  /files/{path}
+trove get workspace/img.png        # GET  /files/{path}  (binary-safe)
 trove write workspace/n.txt "hi"   # POST /write
 trove rm workspace/old.txt         # POST /delete
+
+# Diagnostics: "why is this CLI hitting the wrong tenant?"
+trove doctor                       # version, profile, env, live /v1/me ping
 
 # Activity log (the killer dev flow)
 trove tail                         # long-poll the event feed
@@ -86,6 +95,21 @@ with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
     # Run shell commands
     client.exec("mkdir -p workspace/data")
     output = client.exec("ls workspace/")
+
+    # Structured exec for agent loops — separate stdout/stderr + exit code.
+    result = client.exec_detailed("pytest tests/")
+    if result.exit_code != 0:
+        print("failures on stderr:", result.stderr)
+
+    # Read a text file (1 MB cap; raises on binary).
+    notes = client.read_text("workspace/data/notes.txt")
+
+    # Read a binary file (100 MB cap, no encoding).
+    png = client.read_bytes("workspace/data/image.png")
+
+    # List a directory.
+    for entry in client.list_dir("workspace/data/"):
+        print(entry.name, entry.size_bytes)
 
     # Write a text file
     client.write("workspace/data/notes.txt", "hello world")
@@ -188,10 +212,19 @@ A minimal subscribe + verify script lives in
 
 | Method | Description |
 |--------|-------------|
-| `exec(command)` | Run a shell command. Returns stdout as a string. |
+| `exec(command)` | Run a shell command. Returns stdout as a string (legacy text response). |
+| `exec_detailed(command)` | Run a shell command. Returns `ExecResult(exit_code, stdout, stderr, duration_ms)`. |
 | `write(path, content)` | Write a UTF-8 text file. Returns `FileResult`. |
 | `upload(path, data)` | Upload bytes or a file-like object. Returns `FileResult`. |
+| `read_text(path)` | Read a UTF-8 text file (1 MB cap). Raises `TroveError` on binary content. |
+| `read_bytes(path)` | Download a file's raw bytes (100 MB cap). Binary-safe. |
+| `read_file(path)` | Read metadata + content. Returns `FileContent` (`encoding` field flags binary). |
+| `list_dir(path)` | List a directory. Returns `list[FileInfo]`. |
 | `delete(path)` | Delete a file or directory. Returns the deleted path. |
+| `create_snapshot(label?)` | Tar the namespace and store it. Returns `Snapshot`. |
+| `list_snapshots()` | List snapshots newest-first. Returns `list[Snapshot]`. |
+| `restore_snapshot(id)` | Wipe the namespace and restore. Returns # files restored. |
+| `delete_snapshot(id)` | Delete a snapshot from S3. |
 
 `AsyncTroveClient` mirrors the same interface with `async`/`await`.
 

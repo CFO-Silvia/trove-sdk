@@ -2,6 +2,65 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.6.0 — 2026-05-06
+
+### Added — SDK
+
+- **`TroveClient.exec_detailed(command) -> ExecResult`** for agent loops that
+  need clean stdout/stderr separation and an exit code without parsing the
+  legacy `[exit N]\nstderr\nstdout` text. Hits the new `POST /v1/exec`
+  endpoint; falls back gracefully on the dashboard side. The existing
+  `exec(command) -> str` method is preserved for backwards compatibility.
+- **`TroveClient.read_bytes(path) -> bytes`** — binary-safe download of any
+  file `read_text` would refuse (images, PDFs, audio, archives). Closes the
+  symmetry gap with `upload`. Server cap is 100 MB; oversized responses come
+  back truncated with the full size in the `X-Trove-Size` header.
+- **`TroveClient.read_text` / `read_file` / `list_dir`** are now part of the
+  documented surface. They were available against `/v1/files` but not exposed
+  on the client.
+- **`ExecResult`, `FileInfo`, `FileContent`** dataclasses re-exported from
+  the package root.
+- **`AsyncTroveClient`** mirrors all of the above.
+
+### Added — CLI
+
+- **`trove run` propagates the remote exit code** as the local exit code, so
+  `trove run "build" && trove run "deploy"` finally works the way you'd
+  expect. Previously every call returned 0 with `[exit N]` stuffed into
+  stdout. Falls back to parsing the legacy `[exit N]` prefix when the server
+  hasn't shipped `/v1/exec` yet.
+- **Remote stderr now goes to local stderr** (was silently dropped on
+  success and interleaved into stdout on failure).
+- **`trove run --json`** emits a single JSON line
+  `{exit_code, stdout, stderr, duration_ms}` for piping into `jq`.
+- **`trove get REMOTE [LOCAL]`** — binary-safe download. Mirrors `trove put`.
+  Supports `--stdout`, `--force`, and warns on truncation.
+- **`trove doctor`** — one-shot diagnostic: CLI version, binary path, config
+  permissions, profiles, env-var overrides, and a live `/v1/me` ping.
+  Designed to be the first thing a user runs when something feels off.
+- **`trove login --save-as NAME`** replaces the colliding `--profile NAME`
+  flag. The old flag still works with a deprecation warning. The 0.5.x
+  footgun — `trove --profile staging login ...` silently saving to
+  `default` — now uses the root `--profile` as the save target with a
+  one-line note.
+
+### Server (deployed alongside)
+
+- **`POST /v1/exec`** returns `{exit_code, stdout, stderr, duration_ms}` as
+  JSON. The legacy `POST /exec` keeps its text response for backwards compat.
+- **`GET /files/{path}`** symmetric of the existing `PUT /files/{path}`.
+  Streams raw bytes, capped at `MAX_UPLOAD_BYTES` (100 MB) to match upload.
+  Sends `X-Trove-Size` always and `X-Trove-Truncated: 1` when the cap was
+  hit.
+- **`GET /v1/snapshots`** now populates the `label` field. Was always
+  returning `null` because the implementation skipped `head_object`; we now
+  fan those calls out across a small thread pool, capped at 200 snapshots
+  per response.
+
+The SDK + CLI degrade gracefully against an older API: `exec_detailed`
+falls back to text parsing on `/v1/exec` 404, `read_bytes` errors with the
+server's response, and snapshot list labels stay `None`.
+
 ## 0.5.1 — 2026-05-06
 
 ### Fixed

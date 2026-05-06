@@ -211,9 +211,18 @@ def test_run_command_passes_through_short_flags(monkeypatch):
             class R:
                 status_code = 200
                 text = "ok\n"
+                headers: dict = {}
 
                 def raise_for_status(self):
                     pass
+
+                def json(self):
+                    return {
+                        "exit_code": 0,
+                        "stdout": "ok\n",
+                        "stderr": "",
+                        "duration_ms": 1,
+                    }
 
             return R()
 
@@ -246,11 +255,311 @@ def test_run_command_passes_through_short_flags(monkeypatch):
         captured.clear()
         result = runner.invoke(root, argv, obj={})
         assert result.exit_code == 0, f"argv={argv}: {result.output}"
-        assert captured["url"] == "/exec"
+        # CLI now hits /v1/exec for structured output.
+        assert captured["url"] == "/v1/exec"
         assert captured["command"] == expected_cmd
 
 
 # ── main() entrypoint behavior ───────────────────────────────────────────────────────
+
+
+# ── trove run: exit code propagation, stderr split, --json ────────────────
+
+
+def _runner_with_fake_exec(monkeypatch, exec_response: dict):
+    """Plumb a fake httpx-like client into `trove run` and return (root, runner).
+
+    Most CLI behaviours we care about (exit code propagation, stderr routing,
+    --json formatting) live above the network so we don't need respx; a tiny
+    in-process fake is enough.
+    """
+    from click.testing import CliRunner
+
+    from trove_sdk.cli import _build_root
+
+    class FakeClient:
+        def post(self, url, json=None, timeout=None, **kwargs):
+            class R:
+                status_code = 200
+                text = exec_response.get("stdout", "")
+                headers: dict = {}
+
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return exec_response
+
+            return R()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "trove_sdk.cli.cmds.files.get_runtime_client",
+        lambda ctx, ns_override=None: (FakeClient(), None, "test", "alice"),
+    )
+    return _build_root(), CliRunner()
+
+
+def test_run_propagates_nonzero_exit_code(monkeypatch):
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {
+            "exit_code": 7,
+            "stdout": "",
+            "stderr": "oops\n",
+            "duration_ms": 5,
+        },
+    )
+    result = runner.invoke(root, ["run", "false"], obj={})
+    assert result.exit_code == 7
+    # stderr should not bleed into stdout.
+    assert "oops" not in result.stdout
+    assert "oops" in result.stderr
+
+
+def test_run_zero_exit_writes_only_stdout(monkeypatch):
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {
+            "exit_code": 0,
+            "stdout": "hi\n",
+            "stderr": "",
+            "duration_ms": 3,
+        },
+    )
+    result = runner.invoke(root, ["run", "echo", "hi"], obj={})
+    assert result.exit_code == 0
+    assert result.stdout == "hi\n"
+    assert result.stderr == ""
+
+
+def test_run_zero_exit_still_surfaces_stderr_warnings(monkeypatch):
+    """Successful commands can still write to stderr (linter warnings, etc.).
+    The legacy text endpoint dropped these silently — the new path keeps them.
+    """
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "deprecation warning\n",
+            "duration_ms": 2,
+        },
+    )
+    result = runner.invoke(root, ["run", "build"], obj={})
+    assert result.exit_code == 0
+    assert "deprecation warning" in result.stderr
+
+
+def test_run_json_emits_one_line_object(monkeypatch):
+    import json as _json
+
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {
+            "exit_code": 1,
+            "stdout": "a",
+            "stderr": "b",
+            "duration_ms": 11,
+        },
+    )
+    result = runner.invoke(root, ["run", "--json", "echo"], obj={})
+    # Exit code should still be propagated.
+    assert result.exit_code == 1
+    # stdout should be exactly one parseable JSON object.
+    parsed = _json.loads(result.stdout.strip())
+    assert parsed == {"exit_code": 1, "stdout": "a", "stderr": "b", "duration_ms": 11}
+
+
+# ── trove get ────────────────────────────────────────────────────────────────
+
+
+def _runner_with_fake_get(
+    monkeypatch, content: bytes, headers: dict | None = None, status_code: int = 200
+):
+    from click.testing import CliRunner
+
+    from trove_sdk.cli import _build_root
+
+    class FakeClient:
+        def get(self, url, timeout=None, **kwargs):
+            class R:
+                pass
+
+            r = R()
+            r.status_code = status_code
+            r.content = content
+            r.headers = headers or {}
+            r.raise_for_status = lambda: (
+                (_ for _ in ()).throw(Exception()) if status_code >= 400 else None
+            )
+            return r
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "trove_sdk.cli.cmds.files.get_runtime_client",
+        lambda ctx, ns_override=None: (FakeClient(), None, "test", "alice"),
+    )
+    return _build_root(), CliRunner()
+
+
+def test_get_writes_binary_to_local_path(monkeypatch, tmp_path):
+    payload = bytes(range(256))
+    root, runner = _runner_with_fake_get(monkeypatch, payload)
+    target = tmp_path / "out.bin"
+    result = runner.invoke(root, ["get", "workspace/img.bin", str(target)], obj={})
+    assert result.exit_code == 0, result.stderr
+    assert target.read_bytes() == payload
+
+
+def test_get_refuses_to_overwrite_without_force(monkeypatch, tmp_path):
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"existing")
+    root, runner = _runner_with_fake_get(monkeypatch, b"new")
+    result = runner.invoke(root, ["get", "workspace/img.bin", str(target)], obj={})
+    assert result.exit_code != 0
+    assert "already exists" in result.stderr
+    assert target.read_bytes() == b"existing"
+
+
+def test_get_warns_on_truncation(monkeypatch, tmp_path):
+    root, runner = _runner_with_fake_get(
+        monkeypatch,
+        b"partial",
+        headers={"X-Trove-Truncated": "1", "X-Trove-Size": "104857600"},
+    )
+    target = tmp_path / "big.bin"
+    result = runner.invoke(root, ["get", "workspace/big.bin", str(target)], obj={})
+    assert result.exit_code == 0
+    assert "truncated" in result.stderr
+
+
+# ── trove login --save-as ────────────────────────────────────────────────────
+
+
+def test_login_save_as_writes_to_named_profile(tmp_path, monkeypatch):
+    """`trove login --save-as staging --workspace ws-x --api-key ...` should
+    create a 'staging' profile, not 'default'.
+    """
+    from click.testing import CliRunner
+
+    from trove_sdk.cli import _build_root
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+
+    # No /v1/me — force the explicit-workspace path.
+    monkeypatch.setattr(
+        "trove_sdk.cli.cmds.auth.fetch_me",
+        lambda profile, timeout=10.0: None,
+    )
+
+    runner = CliRunner()
+    root = _build_root()
+    result = runner.invoke(
+        root,
+        [
+            "login",
+            "--save-as",
+            "staging",
+            "--api-key",
+            "trove-sk-test",
+            "--workspace",
+            "ws-staging",
+        ],
+        obj={},
+    )
+    assert result.exit_code == 0, result.output
+
+    p = config.get_profile("staging")
+    assert p is not None and p.workspace_id == "ws-staging"
+    assert config.get_profile("default") is None
+
+
+def test_login_root_profile_falls_back_to_save_as_with_warning(tmp_path, monkeypatch):
+    """The 0.5.x footgun: `trove --profile staging login ...` silently saved
+    to 'default'. New behaviour: use the root --profile name and warn.
+    """
+    from click.testing import CliRunner
+
+    from trove_sdk.cli import _build_root
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(
+        "trove_sdk.cli.cmds.auth.fetch_me",
+        lambda profile, timeout=10.0: None,
+    )
+
+    runner = CliRunner()
+    root = _build_root()
+    result = runner.invoke(
+        root,
+        [
+            "--profile",
+            "staging",
+            "login",
+            "--api-key",
+            "trove-sk-test",
+            "--workspace",
+            "ws-staging",
+        ],
+        obj={},
+    )
+    assert result.exit_code == 0, result.output
+
+    # Saved under 'staging', not 'default' — and we warned.
+    assert config.get_profile("staging") is not None
+    assert config.get_profile("default") is None
+    assert "saving as 'staging'" in result.stderr.lower() or "staging" in result.stderr
+
+
+# ── trove doctor ────────────────────────────────────────────────────────────────
+
+
+def test_doctor_smoke(tmp_path, monkeypatch):
+    """Smoke test: doctor should print version, profile, env state without
+    crashing even when /v1/me is unreachable.
+    """
+    from click.testing import CliRunner
+
+    from trove_sdk.cli import _build_root
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    config.save_profile(
+        "default",
+        config.Profile(
+            api_key="trove-sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            workspace_id="ws-test",
+            namespace="alice",
+        ),
+    )
+    # Pretend /v1/me 404s (older API).
+    monkeypatch.setattr(
+        "trove_sdk.cli.cmds.doctor.fetch_me",
+        lambda profile, timeout=8.0: None,
+    )
+
+    runner = CliRunner()
+    root = _build_root()
+    result = runner.invoke(root, ["doctor"], obj={})
+    assert result.exit_code == 0, result.output
+    out = result.stdout
+    assert "version" in out
+    assert "ws-test" in out
+    # API key should be masked.
+    # _mask shows the first 14 chars (trove-sk- + 5 hex) + ellipsis + last 4.
+    assert "trove-sk-aaaaa" in out
+    # The full key body should never appear in plain text.
+    assert "aaaaaaaaaaaaaaaaaaaaaaaaa" not in out
+
+
+# ── main() entrypoint behavior ───────────────────────────────────────────────
 
 
 def test_main_prints_friendly_hint_when_click_missing(capsys, monkeypatch):

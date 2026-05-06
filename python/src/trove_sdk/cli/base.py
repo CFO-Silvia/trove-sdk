@@ -89,6 +89,8 @@ def handle_errors(fn: Callable) -> Callable:
             sys.exit(130)
         except click.ClickException:
             raise  # let click format + exit
+        except click.exceptions.Exit:
+            raise  # ctx.exit(N) is intentional, not an error to swallow
         except LookupError as e:
             click.secho(f"error: {e}", fg="red", err=True)
             sys.exit(3)
