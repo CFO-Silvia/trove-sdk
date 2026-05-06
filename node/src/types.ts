@@ -16,6 +16,25 @@ export interface FileResult {
   size_bytes: number
 }
 
+/** One entry returned by `listDir`. */
+export interface FileInfo {
+  name:        string
+  path:        string
+  is_dir:      boolean
+  size_bytes:  number | null
+  modified_at: string
+}
+
+/** Result of `readFile` / `readText`. */
+export interface FileContent {
+  path:        string
+  size_bytes:  number
+  modified_at: string
+  encoding:    'utf-8' | 'binary'
+  content:     string | null   // null when encoding === 'binary'
+  truncated:   boolean         // true when file exceeded the 1 MB preview cap
+}
+
 export interface WebhookMetadata {
   webhook_id:  string
   url:         string
