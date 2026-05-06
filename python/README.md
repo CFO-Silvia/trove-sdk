@@ -6,11 +6,74 @@ Python client for [Trove](https://trovefiles.dev) — managed POSIX filesystem f
 
 ```bash
 pip install trove-sdk
+# or with the CLI:
+pip install 'trove-sdk[cli]'
 # or
-uv add trove-sdk
+uv add 'trove-sdk[cli]'
 ```
 
 Requires Python 3.10+.
+
+## CLI
+
+A `trove` command ships in the `[cli]` extra. After installing, log in once and
+then drive your workspace from the terminal:
+
+```bash
+# One-time setup. The CLI calls /v1/me to discover your workspace_id from
+# the key, so you only paste one secret. --namespace is optional.
+trove login --api-key trove-sk-... --namespace alice
+
+# Filesystem (mirrors the SDK)
+trove run "ls workspace/"          # POST /exec
+trove ls workspace/                # GET  /v1/files
+trove cat workspace/notes.txt      # GET  /v1/files/content
+trove put report.pdf workspace/    # PUT  /files/{path}
+trove write workspace/n.txt "hi"   # POST /write
+trove rm workspace/old.txt         # POST /delete
+
+# Activity log (the killer dev flow)
+trove tail                         # long-poll the event feed
+trove tail -t exec.completed -v    # only exec events, full command + first stdout line
+trove events list --since 1h30m    # paged replay (compound durations + ISO timestamps OK)
+
+# Multi-tenant key & webhook management (admin scope required)
+trove keys list
+trove keys create alice --namespace alice
+trove keys revoke key-abc123
+trove webhooks create https://api.example.com/trove/events
+trove webhooks test wh-xyz
+
+# Snapshots
+trove snapshot create --label "before refactor"
+trove snapshot list
+trove snapshot restore snap-abc123
+```
+
+`whoami` shows the active key's scope and namespace lock so you don't accidentally
+point a customer-scoped key at someone else's namespace:
+
+```bash
+$ trove whoami
+profile         : default
+workspace       : ws-abc123...
+scope           : workspace
+namespace lock  : alice  (key is scoped — cannot access other namespaces)
+```
+
+### Profiles & env vars
+
+* `--profile staging` switches between saved logins.
+* `TROVE_API_KEY` + `TROVE_WORKSPACE_ID` (and optional `TROVE_NAMESPACE`,
+  `TROVE_BASE_URL`) override the saved profile when no `--profile` is set.
+* Per-command `-n/--namespace` beats both.
+
+### Output
+
+Event timestamps render in your local timezone. Today's events show
+`HH:MM:SS`; older events get an `MM-DD ` prefix so the log doesn't look
+stuck in a single day. `--json` mode preserves the raw ISO strings for
+piping into `jq` or downstream tools.
 
 ## Usage
 
@@ -84,8 +147,10 @@ with TroveAdminClient(api_key="trove-sk-admin-...", workspace_id="ws-...") as ad
 ```
 
 Available events: `file.written`, `file.deleted`, `exec.completed`,
-`workspace.created`, `key.created`, `key.revoked`. Pass `events=["*"]`
-(or omit) to subscribe to all of them, including future ones.
+`snapshot.created`, `snapshot.restored`, `snapshot.deleted`,
+`namespace.deleted`, `workspace.created`, `key.created`, `key.revoked`,
+`webhook.test`. Pass `events=["*"]` (or omit) to subscribe to all of them,
+including future ones.
 
 #### Receive an event (Flask)
 

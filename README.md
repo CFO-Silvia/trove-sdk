@@ -4,7 +4,7 @@ Client libraries for [Trove](https://trovefiles.dev) — a managed POSIX filesys
 
 | SDK | Install |
 |-----|---------|
-| [Python](./python/) | `pip install trove-sdk` |
+| [Python](./python/) | `pip install trove-sdk`  ·  `pip install 'trove-sdk[cli]'` for the `trove` CLI |
 | [Node.js](./node/) | `npm install trove-sdk` |
 
 ## What is Trove?
