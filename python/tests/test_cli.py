@@ -188,6 +188,71 @@ def test_save_and_load_profile_round_trips_namespace(tmp_path, monkeypatch):
 # ── main() entrypoint behavior ───────────────────────────────────────────────────────
 
 
+# ── trove run flag passthrough ───────────────────────────────────────────────────
+
+
+def test_run_command_passes_through_short_flags(monkeypatch):
+    """Real bug from 0.5.0 smoke: `trove run wc -c file` errored with
+    "No such option: -c" because click ate the flag. The fix is
+    `ignore_unknown_options=True` on the run command — verify the args make
+    it to /exec verbatim.
+    """
+    from click.testing import CliRunner
+
+    from trove_sdk.cli import _build_root
+
+    captured: dict = {}
+
+    class FakeClient:
+        def post(self, url, json=None, timeout=None, **kwargs):
+            captured["url"] = url
+            captured["command"] = json["command"] if json else None
+
+            class R:
+                status_code = 200
+                text = "ok\n"
+
+                def raise_for_status(self):
+                    pass
+
+            return R()
+
+        def close(self):
+            pass
+
+    def fake_runtime_client(ctx, ns_override=None):
+        return FakeClient(), None, "test", "alice"
+
+    monkeypatch.setattr(
+        "trove_sdk.cli.cmds.files.get_runtime_client", fake_runtime_client
+    )
+
+    root = _build_root()
+    runner = CliRunner()
+
+    # The flag-shaped args (`-c`, `-la`, `-F,`) should all reach the API verbatim.
+    for argv, expected_cmd in [
+        (["run", "wc", "-c", "workspace/file.txt"], "wc -c workspace/file.txt"),
+        (["run", "ls", "-la", "workspace/"], "ls -la workspace/"),
+        (
+            ["run", "-n", "alice", "grep", "-i", "x", "workspace/f"],
+            "grep -i x workspace/f",
+        ),
+        (
+            ["run", "awk", "-F,", "NR>1{print $2}", "workspace/d.csv"],
+            "awk -F, NR>1{print $2} workspace/d.csv",
+        ),
+    ]:
+        captured.clear()
+        result = runner.invoke(root, argv, obj={})
+        assert result.exit_code == 0, f"argv={argv}: {result.output}"
+        assert captured["url"] == "/exec"
+        assert captured["command"] == expected_cmd
+
+
+# ── main() entrypoint behavior ───────────────────────────────────────────────────────
+
+
 def test_main_prints_friendly_hint_when_click_missing(capsys, monkeypatch):
     """`pip install trove-sdk` without the [cli] extra registers the `trove`
     entrypoint but fails to import click. main() should catch that and print

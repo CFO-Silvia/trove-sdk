@@ -2,6 +2,18 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.5.1 — 2026-05-06
+
+### Fixed
+
+- **`trove run` no longer eats flag-shaped arguments.** In 0.5.0 a command like
+  `trove run wc -c workspace/file.txt` would error with `No such option: -c`
+  because click's option parser intercepted the `-c` instead of passing it
+  to the workspace shell. Affected anything with short flags (`ls -la`,
+  `grep -i`, `awk -F,`, `cat -n`, ...). Fixed by switching `run` to
+  `ignore_unknown_options=True` + `allow_interspersed_args=False`. The
+  `-n/--namespace` option still works when placed before the command.
+
 ## 0.5.0 — 2026-05-06
 
 ### Added — CLI

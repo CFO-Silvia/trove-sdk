@@ -56,8 +56,20 @@ def _fmt_local(iso: str) -> str:
 # ── run ───────────────────────────────────────────────────────────────────────
 
 
-@click.command("run")
-@click.argument("command", nargs=-1, required=True)
+@click.command(
+    "run",
+    # Pass unknown flags through to the remote shell instead of trying to
+    # parse them ourselves. Without this, `trove run wc -c file` errors with
+    # "No such option: -c". `allow_interspersed_args=False` says: once we see
+    # the first positional, treat everything after as positional too — so
+    # `trove run -n alice ls -la` still parses `-n alice` as our option and
+    # leaves `ls -la` for the workspace.
+    context_settings={
+        "ignore_unknown_options": True,
+        "allow_interspersed_args": False,
+    },
+)
+@click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
 @click.option("--namespace", "-n", default=None, help="Override the profile namespace.")
 @click.pass_context
 @handle_errors
@@ -66,8 +78,9 @@ def run(ctx: click.Context, command: tuple[str, ...], namespace: Optional[str]) 
 
     Examples:
         trove run ls workspace/
+        trove run wc -c workspace/notes.txt
         trove run "cat workspace/notes.txt | wc -l"
-        trove run -n alice "ls workspace/uploads/"
+        trove run -n alice ls -la workspace/uploads/
     """
     cmd = " ".join(command).strip()
     if not cmd:
