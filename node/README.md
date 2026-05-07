@@ -1,6 +1,6 @@
 # trove-sdk · Node.js
 
-Node.js client for [Trove](https://trovefiles.dev) — managed POSIX filesystem for AI agents.
+Node.js client for [Trove](https://trovefiles.dev) — files and commands for AI agents. Persistent storage that survives every session, isolated per customer, with real Unix tools (awk, jq, pdftotext, ffmpeg) preinstalled.
 
 ## Installation
 

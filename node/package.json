@@ -1,7 +1,7 @@
 {
   "name": "trove-sdk",
   "version": "0.3.0",
-  "description": "Node.js SDK for Trove — managed POSIX filesystem for AI agents",
+  "description": "Node.js SDK for Trove — files and commands for AI agents",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

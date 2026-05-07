@@ -1,6 +1,6 @@
 # trove-sdk · Python
 
-Python client for [Trove](https://trovefiles.dev) — managed POSIX filesystem for AI agents.
+Python client for [Trove](https://trovefiles.dev) — files and commands for AI agents. Persistent storage that survives every session, isolated per customer, with real Unix tools (awk, jq, pdftotext, ffmpeg) preinstalled.
 
 ## Installation
 

@@ -1,6 +1,6 @@
 # trove-sdk
 
-Client libraries for [Trove](https://trovefiles.dev) — a managed POSIX filesystem for AI agents.
+Client libraries for [Trove](https://trovefiles.dev) — files and commands for AI agents.
 
 | SDK | Install |
 |-----|---------|
@@ -9,9 +9,9 @@ Client libraries for [Trove](https://trovefiles.dev) — a managed POSIX filesys
 
 ## What is Trove?
 
-Trove gives your AI agent a persistent, cloud-backed filesystem it can use via shell commands — the same production-ready filesystem powering [Silvia](https://trovefiles.dev), available for your own app.
+Trove gives your AI agent a place to save files and run commands — the same persistent storage and shell environment powering [Silvia](https://trovefiles.dev), available for your own app.
 
-Store any file type your agent touches: images for vision agents, PDFs for RAG pipelines, audio for transcription, CSVs for data agents. Agents interact through familiar POSIX commands (`ls`, `cat`, `grep`, `cp`, …). Your backend controls access through scoped API keys, so each customer gets an isolated namespace with no cross-tenant access.
+Store any file type your agent touches: images for vision agents, PDFs for RAG pipelines, audio for transcription, CSVs for data agents. Agents interact through familiar shell commands (`ls`, `cat`, `grep`, `cp`, …) the model already knows. Your backend controls access through scoped API keys, so each customer gets an isolated namespace with no cross-tenant access.
 
 ## Quick example
 

@@ -2,6 +2,14 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.7.1 — 2026-05-06
+
+### Changed
+
+- **Package description and README** — reframed positioning from "managed
+  POSIX filesystem" to "files and commands for AI agents" so the PyPI page
+  matches the website hero. No code changes.
+
 ## 0.7.0 — 2026-05-06
 
 ### Added — SDK
