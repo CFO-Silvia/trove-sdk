@@ -53,6 +53,25 @@ client.clear_init()                 # remove it
 
 Stored at `workspace/.trove/init.sh` — snapshots include it, events fire when it changes, namespace isolation holds. Requires a server that honors the convention; older servers will store the file but not source it.
 
+## Cross-session orientation (`bootstrap()`)
+
+Each new agent session starts with amnesia. One call returns recent files, the active `init.sh`, and the previous session's handoff note — pipe it straight into the model's system prompt and the agent orients before its first tool call:
+
+```python
+bs = client.bootstrap()
+system_prompt += bs.as_system_prompt_block()
+# <workspace>
+#   namespace: alice
+#   files: 12; last edited 2026-05-07T20:00:00Z
+#   recent: workspace/data.csv (3.4KB), workspace/report.md (140B), ...
+#   init.sh: cd workspace/data; source .venv/bin/activate
+#   last_session: |
+#     Investigated Q3 numbers; blocked on Salesforce auth.
+# </workspace>
+```
+
+To leave a note for the next instance of the agent, write `workspace/.trove/agent.md` with the normal `client.write(...)` — the runtime doesn't parse it; pick whatever format the receiving agent expects. `bootstrap()` surfaces it on the next session. See [`python/examples/bootstrap.py`](./python/examples/bootstrap.py) for a cold-start vs. warm-start demo.
+
 ## Multi-tenant key management
 
 Issue one admin key from the [dashboard](https://trovefiles.dev/dashboard), then mint scoped keys per customer from your backend:
