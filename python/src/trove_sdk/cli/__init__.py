@@ -46,7 +46,7 @@ def _build_root():
     """Compose the root group. Done lazily so module import stays cheap."""
     import click
 
-    from .cmds import auth, doctor as _doctor, events, files, keys, snapshots, webhooks
+    from .cmds import auth, doctor as _doctor, events, files, keys, mcp as _mcp, snapshots, webhooks
 
     @click.group(context_settings={"help_option_names": ["-h", "--help"]})
     @click.option(
@@ -80,6 +80,7 @@ def _build_root():
     root.add_command(keys.keys)
     root.add_command(webhooks.webhooks)
     root.add_command(snapshots.snapshot)
+    root.add_command(_mcp.mcp)
 
     # Top-level shortcut: `trove tail` ≡ `trove events tail`.
     root.add_command(events.tail, name="tail")

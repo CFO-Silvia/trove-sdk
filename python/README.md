@@ -8,11 +8,38 @@ Python client for [Trove](https://trovefiles.dev) — files and commands for AI 
 pip install trove-sdk
 # or with the CLI:
 pip install 'trove-sdk[cli]'
+# or with the MCP server (Claude Desktop, Cursor, Claude Code):
+pip install 'trove-sdk[cli,mcp]'
 # or
-uv add 'trove-sdk[cli]'
+uv add 'trove-sdk[cli,mcp]'
 ```
 
 Requires Python 3.10+.
+
+## Use Trove from Claude Desktop / Cursor / Claude Code
+
+Trove ships an MCP server. After logging in, one command wires it into every
+detected client — no JSON editing.
+
+```bash
+pip install 'trove-sdk[cli,mcp]'
+trove login --api-key trove-sk-... --namespace my-project
+trove mcp install                       # every detected client
+# or scope it: --client claude-desktop, --client cursor, --client claude-code
+```
+
+Restart the client and your agent gets three tools:
+
+| Tool | What it does |
+|---|---|
+| `trove_exec(command, stdin?)` | Run any shell command in your workspace. `jq`, `awk`, `pdftotext`, `ffmpeg`, `python3`, etc. preinstalled. |
+| `trove_read(path)` | Read a UTF-8 text file (1 MB cap). |
+| `trove_write(path, content)` | Write a UTF-8 text file. |
+
+`trove mcp status` shows which clients are wired up; `trove mcp uninstall`
+removes the entry. The MCP server reads `TROVE_API_KEY` / `TROVE_NAMESPACE`
+from the env block written into the client's config — point at a different
+namespace by re-running `install` with `-n <ns>`.
 
 ## Multi-tenant agent isolation (three-key pattern)
 
@@ -112,6 +139,12 @@ trove webhooks test wh-xyz
 trove snapshot create --label "before refactor"
 trove snapshot list
 trove snapshot restore snap-abc123
+
+# MCP server (Claude Desktop, Cursor, Claude Code)
+trove mcp install                  # detects clients, writes a 'trove' server entry
+trove mcp install --client cursor --namespace alice
+trove mcp status                   # which clients have it wired up
+trove mcp uninstall
 ```
 
 `whoami` shows the active key's scope and namespace lock so you don't accidentally

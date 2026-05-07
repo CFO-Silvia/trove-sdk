@@ -144,9 +144,17 @@ class TroveClient:
         _raise_for(resp)
         return resp.json()["deleted"]
 
-    def list_dir(self, path: str = "workspace/") -> list[FileInfo]:
-        """List a directory in the workspace. Directories first, then files, alphabetical."""
-        resp = self._http.get("/v1/files", params={"path": path})
+    def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> list[FileInfo]:
+        """List a directory in the workspace. Directories first, then files, alphabetical.
+
+        Pass ``recursive=True`` to get all descendants in one call (depth-first,
+        max 1000 entries, max 20 levels). The ``is_dir`` field lets callers
+        distinguish files from intermediate directories in the flat list.
+        """
+        params: dict = {"path": path}
+        if recursive:
+            params["recursive"] = "true"
+        resp = self._http.get("/v1/files", params=params)
         _raise_for(resp)
         return [_parse_file_info(e) for e in resp.json().get("entries", [])]
 
@@ -260,8 +268,11 @@ class AsyncTroveClient:
         _raise_for(resp)
         return resp.json()["deleted"]
 
-    async def list_dir(self, path: str = "workspace/") -> list[FileInfo]:
-        resp = await self._http.get("/v1/files", params={"path": path})
+    async def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> list[FileInfo]:
+        params: dict = {"path": path}
+        if recursive:
+            params["recursive"] = "true"
+        resp = await self._http.get("/v1/files", params=params)
         _raise_for(resp)
         return [_parse_file_info(e) for e in resp.json().get("entries", [])]
 
