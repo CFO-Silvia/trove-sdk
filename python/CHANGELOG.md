@@ -2,6 +2,34 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.9.1 — 2026-05-07
+
+### Added — `bootstrap()` reaches Claude Desktop / Cursor / Claude Code via MCP
+
+`pip install 'trove-sdk[mcp]'` now exposes the orientation packet through
+three layered surfaces, so an agent picks up where the previous session
+left off without any wrapper code on the user's side:
+
+- **`trove_bootstrap` tool.** A fifth MCP tool alongside `trove_exec` /
+  `trove_read` / `trove_write` / `trove_put_base64`. Returns the rendered
+  `<workspace>` block — recent files, active `init.sh`, previous
+  session's `agent.md` handoff. Errors come back as a human-readable
+  string the model can read instead of an exception.
+
+- **Server `instructions`.** FastMCP's instructions field is populated
+  with a short brief telling the model to call `trove_bootstrap()` on
+  its FIRST turn and to write `workspace/.trove/agent.md` before ending
+  substantive sessions. Closes the cross-session-memory loop without
+  the dev having to teach every wrapper about it.
+
+- **`trove_orient` MCP prompt.** Surfaces in Claude Desktop's prompt
+  picker as a slash-command. Renders the same orientation block on
+  human request — useful for manually seeding a fresh conversation or
+  re-orienting mid-session.
+
+No new endpoints. No client changes. Just `pip install --upgrade
+'trove-sdk[mcp]'` and restart the client.
+
 ## 0.9.0 — 2026-05-07
 
 ### Added — `bootstrap()` for cross-session agent orientation

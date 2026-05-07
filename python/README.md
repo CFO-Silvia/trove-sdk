@@ -32,7 +32,7 @@ Want a non-default namespace? Add `--namespace my-project` to either
 `trove login` or `trove mcp install`. CI / headless boxes can pass
 `--api-key trove-sk-...` to skip the browser.
 
-Restart the client and your agent gets three tools:
+Restart the client and your agent gets five tools:
 
 | Tool | What it does |
 |---|---|
@@ -40,6 +40,11 @@ Restart the client and your agent gets three tools:
 | `trove_read(path)` | Read a UTF-8 text file (1 MB cap). |
 | `trove_write(path, content)` | Write a UTF-8 text file. |
 | `trove_put_base64(path, content_b64)` | Write a binary file (PDF, image, audio) from base64 — saves the `base64 -d` shell dance. |
+| `trove_bootstrap()` | **First-turn orientation.** Returns recent files, the active `init.sh`, and the previous session's handoff note from `workspace/.trove/agent.md` — formatted as a `<workspace>` block. Server `instructions` nudge the model to call this on its first turn so it picks up where the last session left off instead of probing with `ls`/`cat`. |
+
+The server also exposes a **`trove_orient` MCP prompt** (slash-command in
+Claude Desktop's prompt picker) so a human can manually re-seed a
+conversation with the workspace state mid-session.
 
 `trove mcp status` shows which clients are wired up; `trove mcp uninstall`
 removes the entry. The MCP server reads `TROVE_API_KEY` / `TROVE_NAMESPACE`

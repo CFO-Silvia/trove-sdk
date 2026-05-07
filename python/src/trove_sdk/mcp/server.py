@@ -8,12 +8,20 @@ install``:
     TROVE_NAMESPACE   (required)
     TROVE_BASE_URL    (optional; default https://api.trovefiles.dev)
 
-We expose three tools deliberately: ``trove_exec`` is the universal hammer
-(every preinstalled Unix tool reachable through one entry point), and
-``trove_read`` / ``trove_write`` skip the shell-quoting tax for the common
-case. ``ls``, ``rm``, ``snapshot`` are intentionally absent — agents can
+We expose four tools deliberately: ``trove_exec`` is the universal hammer
+(every preinstalled Unix tool reachable through one entry point),
+``trove_read`` / ``trove_write`` / ``trove_put_base64`` skip the
+shell-quoting tax for the common cases, and ``trove_bootstrap`` lets the
+model orient itself at session start without a probing ``ls`` + ``cat``
+turn. ``ls``, ``rm``, ``snapshot`` are intentionally absent — agents can
 reach them through ``trove_exec`` without bloating the tool list, which
 hurts model performance.
+
+Server ``instructions`` nudge the model to call ``trove_bootstrap`` on
+its first turn and to leave a handoff note before ending substantive
+sessions, so the cross-session memory loop closes itself in practice.
+The same orientation block is also exposed as the ``trove_orient`` MCP
+prompt (slash-command in Claude Desktop) for human-triggered seeding.
 """
 
 from __future__ import annotations
@@ -70,7 +78,24 @@ def main() -> None:
         sys.exit(1)
 
     client = _build_client()
-    server = FastMCP("trove")
+    server = FastMCP(
+        "trove",
+        instructions=(
+            "Trove gives you a persistent POSIX workspace under workspace/. "
+            "Files survive between calls and across sessions. Real Unix "
+            "tools (jq, awk, pdftotext, ffmpeg, python3) are preinstalled.\n\n"
+            "On your FIRST turn of any new conversation, call "
+            "trove_bootstrap() to see what files are present, what shell "
+            "prelude is active, and what handoff note (if any) the previous "
+            "session left at workspace/.trove/agent.md. This is much cheaper "
+            "than probing with ls + cat and lets you pick up where you "
+            "stopped instead of restarting from amnesia.\n\n"
+            "Before ending a substantive session, write a short markdown "
+            "handoff to workspace/.trove/agent.md via trove_write — what "
+            "you learned, what you ruled out, where the cache lives. The "
+            "next instance of you will see it through trove_bootstrap()."
+        ),
+    )
 
     @server.tool()
     def trove_exec(command: str, stdin: str | None = None) -> str:
@@ -163,6 +188,51 @@ def main() -> None:
         except TroveError as e:
             return f"trove error (HTTP {e.status_code}): {e}"
         return f"wrote {r.path} ({r.size_bytes} bytes)"
+
+    @server.tool()
+    def trove_bootstrap() -> str:
+        """Orient yourself in the Trove workspace at session start.
+
+        Returns a rendered <workspace> block summarizing:
+
+        - the namespace and total non-metadata file count
+        - the 10 most recently modified files (with paths and sizes)
+        - the active init.sh prelude that runs before every shell command
+        - the previous session's handoff note from workspace/.trove/agent.md
+
+        Call this on your FIRST turn of any conversation. It replaces the
+        usual "let me run ls and cat to figure out what's here" probing
+        with a single round-trip and lets you pick up where the previous
+        instance left off.
+
+        To leave a handoff note for the next session yourself, write
+        markdown to workspace/.trove/agent.md via trove_write before
+        ending — there is no dedicated method, the path is the API.
+
+        Returns:
+            An XML-tagged <workspace>...</workspace> block ready to read.
+            Empty namespaces render cleanly as ``files: 0 (empty)``.
+        """
+        try:
+            bs = client.bootstrap()
+        except TroveError as e:
+            return f"trove error (HTTP {e.status_code}): {e}"
+        return bs.as_system_prompt_block()
+
+    @server.prompt()
+    def trove_orient() -> str:
+        """Show the current state of the Trove workspace.
+
+        Surfaces recent files, the active init.sh, and the previous
+        session's handoff note as a system-prompt-shaped block. Useful
+        for manually seeding a new conversation, or mid-session when
+        you want the model to re-orient.
+        """
+        try:
+            bs = client.bootstrap()
+        except TroveError as e:
+            return f"trove error (HTTP {e.status_code}): {e}"
+        return bs.as_system_prompt_block()
 
     server.run()
 
