@@ -2,6 +2,14 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.7.2 — 2026-05-06
+
+### Changed
+
+- **README** — promote the three-key multi-tenant pattern (admin / scoped
+  runtime / unscoped runtime) to the top of the README so PyPI visitors see
+  it before the API reference. No code changes.
+
 ## 0.7.1 — 2026-05-06
 
 ### Changed

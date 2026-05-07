@@ -14,6 +14,60 @@ uv add 'trove-sdk[cli]'
 
 Requires Python 3.10+.
 
+## Multi-tenant agent isolation (three-key pattern)
+
+If you're running an agent product where each end-user gets their own
+sandbox, this is the pattern you want. **One namespace per session, one
+scoped key per session, hard isolation enforced server-side.**
+
+```
+                       ┌─────────────────────────────────────┐
+                       │ secrets manager                     │
+                       │   TROVE_ADMIN_KEY     (scope:admin) │
+                       │   TROVE_RUNTIME_KEY   (unscoped)    │
+                       └─────────────────────────────────────┘
+                                    │
+       ┌────────────────────────────┼────────────────────────┐
+       │                            │                        │
+       ▼                            ▼                        ▼
+   provisioner                  agent runtime            ops dashboard
+   (admin key)                 (scoped key)            (unscoped key)
+       │                            │                        │
+       │  mints scoped key          │  hard-isolated to      │  reads across
+       │  per session               │  one namespace          │  every namespace
+       │                            │                        │
+       └────────► session-abc123 ◄──┘                        │
+                  session-xyz789  ◄────────────────────────► │
+```
+
+| Key | Where it lives | What it does | Why not just one key? |
+|---|---|---|---|
+| **Admin** | Backend secrets manager | Mint and revoke session keys | Mint/revoke needs `scope=admin`; runtime keys get 403 |
+| **Scoped runtime** | Agent process for one session | Read/write its own namespace only | One per session means one revoke instantly stops a runaway agent |
+| **Unscoped runtime** | Backend ops jobs (billing, metrics) | Walk every namespace | Scoped keys can't see other tenants; admin keys can't touch the filesystem |
+
+```python
+# Backend — provision a session
+from trove_sdk import TroveAdminClient
+
+with TroveAdminClient(api_key=ADMIN_KEY, workspace_id=WS_ID) as admin:
+    key = admin.create_key(f"session-{user_id}", namespace=f"session-{user_id}")
+    # Hand key.api_key to the agent runtime — it can ONLY touch this namespace.
+
+# Agent runtime — single-session
+from trove_sdk import TroveClient
+
+with TroveClient(api_key=session_key, namespace=f"session-{user_id}") as fs:
+    fs.exec("...")   # confined to session-{user_id}/
+    # Pointing at a different namespace returns 403 — the key is scoped.
+
+# Session ends — revoke the scoped key
+admin.revoke_key(key.key_id)
+```
+
+A complete runnable example (provisioner + runtime + dashboard) lives in
+[`examples/sessions/`](examples/sessions/) — copy it as a starting point.
+
 ## CLI
 
 A `trove` command ships in the `[cli]` extra. After installing, log in once and
