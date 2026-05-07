@@ -2,7 +2,7 @@ import httpx
 import pytest
 import respx
 
-from trove_sdk import TroveClient, TroveError
+from trove_sdk import AsyncTroveClient, TroveClient, TroveError
 from trove_sdk.models import ExecResult, FileResult
 
 BASE = "https://api.trovefiles.dev"
@@ -217,3 +217,117 @@ def test_read_bytes_404_raises_trove_error():
         with pytest.raises(TroveError) as exc:
             c.read_bytes("workspace/missing.png")
     assert exc.value.status_code == 404
+
+
+# ── init.sh helpers (persistent shell context) ────────────────────────────────
+
+
+@respx.mock
+def test_set_init_writes_canonical_path():
+    import json as _j
+    route = respx.post(f"{BASE}/write").mock(
+        return_value=httpx.Response(
+            200, json={"path": "workspace/.trove/init.sh", "size_bytes": 12}
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        result = c.set_init("cd workspace\n")
+    body = _j.loads(route.calls[0].request.content)
+    assert body["path"] == ".trove/init.sh"
+    assert body["content"] == "cd workspace\n"
+    assert isinstance(result, FileResult)
+
+
+@respx.mock
+def test_get_init_returns_text_when_present():
+    respx.get(f"{BASE}/v1/files/content").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "path": "workspace/.trove/init.sh",
+                "size_bytes": 13,
+                "modified_at": "2026-05-06T20:00:00Z",
+                "encoding": "utf-8",
+                "content": "cd workspace\n",
+            },
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        assert c.get_init() == "cd workspace\n"
+
+
+@respx.mock
+def test_get_init_returns_none_when_absent():
+    respx.get(f"{BASE}/v1/files/content").mock(
+        return_value=httpx.Response(
+            404, json={"detail": "Path not found: workspace/.trove/init.sh"}
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        assert c.get_init() is None
+
+
+@respx.mock
+def test_get_init_propagates_non_404_errors():
+    respx.get(f"{BASE}/v1/files/content").mock(
+        return_value=httpx.Response(401, json={"detail": "Invalid API key"})
+    )
+    with TroveClient("trove-sk-bad", "ns", base_url=BASE) as c:
+        with pytest.raises(TroveError) as exc:
+            c.get_init()
+    assert exc.value.status_code == 401
+
+
+@respx.mock
+def test_clear_init_returns_true_when_deleted():
+    respx.post(f"{BASE}/delete").mock(
+        return_value=httpx.Response(
+            200, json={"deleted": "workspace/.trove/init.sh"}
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        assert c.clear_init() is True
+
+
+@respx.mock
+def test_clear_init_returns_false_when_absent():
+    respx.post(f"{BASE}/delete").mock(
+        return_value=httpx.Response(
+            404, json={"detail": "Path not found: workspace/.trove/init.sh"}
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        assert c.clear_init() is False
+
+
+@respx.mock
+async def test_async_init_round_trip():
+    import json as _j
+    write_route = respx.post(f"{BASE}/write").mock(
+        return_value=httpx.Response(
+            200, json={"path": "workspace/.trove/init.sh", "size_bytes": 4}
+        )
+    )
+    respx.get(f"{BASE}/v1/files/content").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "path": "workspace/.trove/init.sh",
+                "size_bytes": 5,
+                "modified_at": "2026-05-06T20:00:00Z",
+                "encoding": "utf-8",
+                "content": "cd /\n",
+            },
+        )
+    )
+    respx.post(f"{BASE}/delete").mock(
+        return_value=httpx.Response(
+            200, json={"deleted": "workspace/.trove/init.sh"}
+        )
+    )
+    async with AsyncTroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        await c.set_init("cd /\n")
+        assert await c.get_init() == "cd /\n"
+        assert await c.clear_init() is True
+    body = _j.loads(write_route.calls[0].request.content)
+    assert body["path"] == ".trove/init.sh"

@@ -9,6 +9,11 @@ from .models import ExecResult, FileContent, FileInfo, FileResult, Snapshot
 
 _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
 
+# Sourced by /v1/exec before each user command if present. Persistent shell
+# context (cwd, env, venv activation) lives here so it survives across agent
+# process restarts — see set_init/get_init/clear_init.
+_INIT_PATH = "workspace/.trove/init.sh"
+
 
 def _norm_path(path: str) -> str:
     """Strip leading workspace/ prefix — write/upload/delete paths are namespace-relative."""
@@ -144,6 +149,43 @@ class TroveClient:
         _raise_for(resp)
         return resp.json()["deleted"]
 
+    def set_init(self, text: str) -> FileResult:
+        """Set the namespace's persistent shell init script.
+
+        Writes ``workspace/.trove/init.sh``. The exec endpoint sources this
+        file before every command, so cwd, env vars, and venv activation
+        survive across calls — and across agent process restarts, since it
+        lives in the namespace volume.
+
+        Example::
+
+            client.set_init("cd workspace/data\\nsource .venv/bin/activate\\n")
+            client.exec("python script.py")  # runs in workspace/data, venv active
+
+        Requires a server that honors the init.sh convention; older servers
+        will store the file but not source it.
+        """
+        return self.write(_INIT_PATH, text)
+
+    def get_init(self) -> str | None:
+        """Read the persistent shell init script, or None if unset."""
+        try:
+            return self.read_text(_INIT_PATH)
+        except TroveError as e:
+            if e.status_code == 404:
+                return None
+            raise
+
+    def clear_init(self) -> bool:
+        """Delete the init script. Returns True if it existed, False otherwise."""
+        try:
+            self.delete(_INIT_PATH)
+            return True
+        except TroveError as e:
+            if e.status_code == 404:
+                return False
+            raise
+
     def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> list[FileInfo]:
         """List a directory in the workspace. Directories first, then files, alphabetical.
 
@@ -267,6 +309,29 @@ class AsyncTroveClient:
         resp = await self._http.post("/delete", json={"path": _norm_path(path)})
         _raise_for(resp)
         return resp.json()["deleted"]
+
+    async def set_init(self, text: str) -> FileResult:
+        """Set the namespace's persistent shell init script. See :meth:`TroveClient.set_init`."""
+        return await self.write(_INIT_PATH, text)
+
+    async def get_init(self) -> str | None:
+        """Read the persistent shell init script, or None if unset."""
+        try:
+            return await self.read_text(_INIT_PATH)
+        except TroveError as e:
+            if e.status_code == 404:
+                return None
+            raise
+
+    async def clear_init(self) -> bool:
+        """Delete the init script. Returns True if it existed, False otherwise."""
+        try:
+            await self.delete(_INIT_PATH)
+            return True
+        except TroveError as e:
+            if e.status_code == 404:
+                return False
+            raise
 
     async def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> list[FileInfo]:
         params: dict = {"path": path}

@@ -32,6 +32,25 @@ with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
     print(client.exec("awk -F, 'NR>1{print $2}' workspace/data.csv"))
 ```
 
+## Persistent shell context
+
+Tired of prefixing every `exec` with `cd workspace/data && source .venv/bin/activate && ...`? Set the namespace's init script once — the exec endpoint sources it before every command, and it survives across agent process restarts because it lives in the namespace volume.
+
+```python
+client.set_init("""
+cd workspace/data
+source .venv/bin/activate
+export REPORT_DATE=2026-05-06
+""")
+
+client.exec("python analyze.py")    # runs in workspace/data, venv active, env set
+client.exec("pytest tests/")        # same context — no re-setup
+client.get_init()                   # → the script text, or None if unset
+client.clear_init()                 # remove it
+```
+
+Stored at `workspace/.trove/init.sh` — snapshots include it, events fire when it changes, namespace isolation holds. Requires a server that honors the convention; older servers will store the file but not source it.
+
 ## Multi-tenant key management
 
 Issue one admin key from the [dashboard](https://trovefiles.dev/dashboard), then mint scoped keys per customer from your backend:
