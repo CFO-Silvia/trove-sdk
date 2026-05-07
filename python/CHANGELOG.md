@@ -2,6 +2,56 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.7.5 — 2026-05-07
+
+### Added — Browser-based `trove login`
+
+- **`trove login`** now defaults to a device-code flow: prints a short
+  user code, opens the dashboard, and collects a freshly-minted API key
+  once the user approves in the browser. No more "go copy a key from the
+  dashboard, paste it back" two-step.
+- **Backwards compatible.** `--api-key` still skips the browser. Piping a
+  key on stdin (`echo $KEY | trove login`) does too — handy for CI. Add
+  `--no-browser` to force the old paste prompt on a TTY.
+- Requires server v0.2.0+ (older servers fall back to the paste flow with
+  a clear hint).
+
+### Added — Error subclasses
+
+- **`TroveAuthError` (401/403), `TroveNotFoundError` (404),
+  `TroveTimeoutError` (408/504), `TroveRateLimitError` (429),
+  `TroveServerError` (5xx)** — all subclass `TroveError`, so existing
+  `except TroveError:` blocks keep working. Lets retry/recovery logic
+  match on the class instead of `status_code` integers.
+
+### Added — `TroveAdminClient.from_api_key`
+
+- Classmethod on `TroveAdminClient` and `AsyncTroveAdminClient` that
+  discovers `workspace_id` from `/v1/me`, so the multi-tenant quickstart
+  needs one secret instead of two.
+
+### Added — Truncation visibility
+
+- **`list_dir` returns `ListResult`** — a `list[FileInfo]` subclass with a
+  `.truncated` attribute. Iteration / indexing / `len()` unchanged; now
+  callers can detect when the server's 1000-entry / 20-level cap was hit.
+- **`read_bytes_full(path)`** — same network call as `read_bytes` but
+  returns `BytesContent(content, truncated, size_bytes)` so callers can
+  see when the 100 MB response cap was hit (reads `X-Trove-Truncated` /
+  `X-Trove-Size` headers the SDK previously ignored).
+
+### Added — `client.read(path)`
+
+- Returns `str` for UTF-8 files, `bytes` for binary, in one round-trip.
+  Saves the `read_text` → 415 → `read_bytes` retry pattern, especially
+  behind the MCP `trove_read` tool.
+
+### Added — MCP `trove_put_base64`
+
+- Fourth MCP tool. Lets the model drop binaries (PDFs, images, audio)
+  without the `trove_write` + `trove_exec | base64 -d` round-trip and
+  shell-quoting hazard.
+
 ## 0.7.4 — 2026-05-06
 
 ### Added — Persistent shell context

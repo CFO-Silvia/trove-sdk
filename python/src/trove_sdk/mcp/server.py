@@ -125,14 +125,41 @@ def main() -> None:
         Args:
             path: Destination path (e.g. ``workspace/plan.md``).
                 Parent directories are created as needed.
-            content: Full file contents as UTF-8 text. For binary, write a
-                base64 string and decode in a follow-up ``trove_exec``.
+            content: Full file contents as UTF-8 text. For binary files
+                (PDFs, images, audio) use ``trove_put_base64`` instead.
 
         Returns:
             Confirmation including the resolved path and byte count.
         """
         try:
             r = client.write(path, content)
+        except TroveError as e:
+            return f"trove error (HTTP {e.status_code}): {e}"
+        return f"wrote {r.path} ({r.size_bytes} bytes)"
+
+    @server.tool()
+    def trove_put_base64(path: str, content_b64: str) -> str:
+        """Write a binary file from base64 content (PDFs, images, audio).
+
+        One call instead of the ``trove_write`` + ``trove_exec | base64 -d``
+        dance — and no shell-quoting hazard.
+
+        Args:
+            path: Destination path (e.g. ``workspace/report.pdf``).
+            content_b64: Standard base64 of the file's bytes (no data:
+                URL prefix, whitespace tolerated).
+
+        Returns:
+            Confirmation including the resolved path and decoded byte count.
+        """
+        import base64 as _b64
+        import binascii as _bx
+        try:
+            data = _b64.b64decode(content_b64, validate=False)
+        except (_bx.Error, ValueError) as e:
+            return f"invalid base64: {e}"
+        try:
+            r = client.upload(path, data)
         except TroveError as e:
             return f"trove error (HTTP {e.status_code}): {e}"
         return f"wrote {r.path} ({r.size_bytes} bytes)"

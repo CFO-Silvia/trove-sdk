@@ -710,3 +710,108 @@ def test_main_tolerates_streams_without_reconfigure(monkeypatch):
 
     # Should not raise.
     main()
+
+
+# ── device-code login ────────────────────────────────────────────────────────
+
+
+def _mock_transport(handlers):
+    """httpx.MockTransport dispatching by (method, path) → handler(request)."""
+    import httpx
+
+    def dispatch(request):
+        h = handlers.get((request.method, request.url.path))
+        if h is None:
+            return httpx.Response(404, json={"detail": "no handler"})
+        return h(request)
+
+    return httpx.MockTransport(dispatch)
+
+
+def _patch_httpx_with_transport(monkeypatch, auth_module, transport):
+    import httpx
+    real_client = httpx.Client
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+    monkeypatch.setattr(auth_module.httpx, "Client", fake_client)
+    monkeypatch.setattr(auth_module.webbrowser, "open", lambda *a, **kw: True)
+    monkeypatch.setattr(auth_module.time, "sleep", lambda _s: None)
+
+
+def test_device_login_happy_path(monkeypatch):
+    import httpx
+    from trove_sdk.cli.cmds import auth
+
+    poll_calls = {"n": 0}
+
+    def start(req):
+        return httpx.Response(201, json={
+            "device_code": "trove-dc-test",
+            "user_code":   "BRDG-FXSH",
+            "verification_uri": "https://example.com/cli",
+            "verification_uri_complete": "https://example.com/cli?code=BRDG-FXSH",
+            "interval":   0,
+            "expires_in": 600,
+        })
+
+    def poll(req):
+        poll_calls["n"] += 1
+        if poll_calls["n"] == 1:
+            return httpx.Response(200, json={"status": "pending"})
+        return httpx.Response(200, json={
+            "status":       "approved",
+            "api_key":      "trove-sk-NEW",
+            "workspace_id": "ws-abc",
+            "key_id":       "key-xyz",
+        })
+
+    transport = _mock_transport({
+        ("POST", "/v1/auth/device/start"): start,
+        ("POST", "/v1/auth/device/poll"):  poll,
+    })
+    _patch_httpx_with_transport(monkeypatch, auth, transport)
+
+    api_key, ws = auth._device_login("https://api.example.com")
+    assert api_key == "trove-sk-NEW"
+    assert ws == "ws-abc"
+    assert poll_calls["n"] == 2
+
+
+def test_device_login_denied(monkeypatch):
+    import httpx
+    from trove_sdk.cli.cmds import auth
+
+    def start(req):
+        return httpx.Response(201, json={
+            "device_code": "trove-dc-test", "user_code": "BRDG-FXSH",
+            "verification_uri": "https://example.com/cli",
+            "verification_uri_complete": "https://example.com/cli?code=BRDG-FXSH",
+            "interval": 0, "expires_in": 600,
+        })
+    def poll(req):
+        return httpx.Response(200, json={"status": "denied"})
+
+    transport = _mock_transport({
+        ("POST", "/v1/auth/device/start"): start,
+        ("POST", "/v1/auth/device/poll"):  poll,
+    })
+    _patch_httpx_with_transport(monkeypatch, auth, transport)
+
+    with pytest.raises(click.ClickException, match="denied"):
+        auth._device_login("https://api.example.com")
+
+
+def test_device_login_old_server_404(monkeypatch):
+    """Server predates device flow → friendly fallback hint mentioning --api-key."""
+    import httpx
+    from trove_sdk.cli.cmds import auth
+
+    def start(req):
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    transport = _mock_transport({("POST", "/v1/auth/device/start"): start})
+    _patch_httpx_with_transport(monkeypatch, auth, transport)
+
+    with pytest.raises(click.ClickException, match="--api-key"):
+        auth._device_login("https://api.example.com")

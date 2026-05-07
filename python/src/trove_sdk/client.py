@@ -4,8 +4,16 @@ from typing import BinaryIO
 
 import httpx
 
-from .exceptions import TroveError
-from .models import ExecResult, FileContent, FileInfo, FileResult, Snapshot
+from .exceptions import TroveError, raise_for_response
+from .models import (
+    BytesContent,
+    ExecResult,
+    FileContent,
+    FileInfo,
+    FileResult,
+    ListResult,
+    Snapshot,
+)
 
 _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
 
@@ -63,13 +71,21 @@ def _parse_file_content(d: dict) -> FileContent:
     )
 
 
-def _raise_for(response: httpx.Response) -> None:
-    if not response.is_success:
-        try:
-            detail = response.json().get("detail", response.text)
-        except Exception:
-            detail = response.text
-        raise TroveError(detail, status_code=response.status_code)
+def _parse_bytes_content(resp: httpx.Response) -> BytesContent:
+    """Wrap a /files/{path} response with its truncation headers."""
+    raw_size = resp.headers.get("X-Trove-Size")
+    try:
+        size = int(raw_size) if raw_size is not None else None
+    except ValueError:
+        size = None
+    return BytesContent(
+        content=resp.content,
+        truncated=resp.headers.get("X-Trove-Truncated") == "1",
+        size_bytes=size,
+    )
+
+
+_raise_for = raise_for_response  # back-compat alias for any downstream that imported it
 
 
 class TroveClient:
@@ -186,19 +202,40 @@ class TroveClient:
                 return False
             raise
 
-    def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> list[FileInfo]:
+    def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> ListResult:
         """List a directory in the workspace. Directories first, then files, alphabetical.
 
         Pass ``recursive=True`` to get all descendants in one call (depth-first,
         max 1000 entries, max 20 levels). The ``is_dir`` field lets callers
         distinguish files from intermediate directories in the flat list.
+
+        Returns a :class:`ListResult` (a ``list[FileInfo]`` subclass with a
+        ``truncated`` attribute). Iteration, indexing, and ``len()`` work
+        exactly like a list; check ``result.truncated`` to know whether the
+        server-side cap was hit.
         """
         params: dict = {"path": path}
         if recursive:
             params["recursive"] = "true"
         resp = self._http.get("/v1/files", params=params)
         _raise_for(resp)
-        return [_parse_file_info(e) for e in resp.json().get("entries", [])]
+        body = resp.json()
+        return ListResult(
+            (_parse_file_info(e) for e in body.get("entries", [])),
+            truncated=bool(body.get("truncated", False)),
+        )
+
+    def read(self, path: str) -> str | bytes:
+        """Read a file, returning ``str`` for UTF-8 text or ``bytes`` for binary.
+
+        One round-trip whether the file is text or binary — saves the
+        ``read_text`` → 415 → ``read_bytes`` retry pattern. Prefer
+        ``read_text`` / ``read_bytes`` when the type is known up front.
+        """
+        info = self.read_file(path)
+        if info.encoding == "binary":
+            return self.read_bytes(path)
+        return info.content or ""
 
     def read_text(self, path: str) -> str:
         """Read a UTF-8 text file. Caps at 1 MB; raises TroveError on binary content."""
@@ -218,12 +255,23 @@ class TroveClient:
         PDFs, audio, anything `read_text` would refuse.
 
         The server caps the response at the same size as `upload` (100 MB).
-        Larger files come back truncated; check
-        ``response.headers["X-Trove-Truncated"]`` if you need to know.
+        For files that may exceed the cap, use :meth:`read_bytes_full` to
+        also receive the truncation flag and full file size.
         """
         resp = self._http.get(f"/files/{_norm_path(path)}")
         _raise_for(resp)
         return resp.content
+
+    def read_bytes_full(self, path: str) -> BytesContent:
+        """Download a file's raw bytes plus truncation metadata.
+
+        Reads the ``X-Trove-Truncated`` and ``X-Trove-Size`` response
+        headers so callers can detect when the 100 MB cap was hit and act
+        on the full file size.
+        """
+        resp = self._http.get(f"/files/{_norm_path(path)}")
+        _raise_for(resp)
+        return _parse_bytes_content(resp)
 
     def create_snapshot(self, label: str | None = None) -> Snapshot:
         """Tar the current namespace state and store it. Restorable for 30 days."""
@@ -333,13 +381,24 @@ class AsyncTroveClient:
                 return False
             raise
 
-    async def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> list[FileInfo]:
+    async def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> ListResult:
         params: dict = {"path": path}
         if recursive:
             params["recursive"] = "true"
         resp = await self._http.get("/v1/files", params=params)
         _raise_for(resp)
-        return [_parse_file_info(e) for e in resp.json().get("entries", [])]
+        body = resp.json()
+        return ListResult(
+            (_parse_file_info(e) for e in body.get("entries", [])),
+            truncated=bool(body.get("truncated", False)),
+        )
+
+    async def read(self, path: str) -> str | bytes:
+        """Read a file, returning ``str`` for UTF-8 text or ``bytes`` for binary."""
+        info = await self.read_file(path)
+        if info.encoding == "binary":
+            return await self.read_bytes(path)
+        return info.content or ""
 
     async def read_text(self, path: str) -> str:
         info = await self.read_file(path)
@@ -356,6 +415,11 @@ class AsyncTroveClient:
         resp = await self._http.get(f"/files/{_norm_path(path)}")
         _raise_for(resp)
         return resp.content
+
+    async def read_bytes_full(self, path: str) -> BytesContent:
+        resp = await self._http.get(f"/files/{_norm_path(path)}")
+        _raise_for(resp)
+        return _parse_bytes_content(resp)
 
     async def create_snapshot(self, label: str | None = None) -> Snapshot:
         resp = await self._http.post("/v1/snapshots", json={"label": label})

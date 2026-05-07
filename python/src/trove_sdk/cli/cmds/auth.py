@@ -1,10 +1,16 @@
-"""Auth verbs: login (paste-based), logout, whoami.
+"""Auth verbs: login (device-code or paste), logout, whoami.
 
-Browser-based OAuth is a future upgrade — paste flow ships in 20 minutes and
-covers the dev who's already in the dashboard about to copy a key anyway.
+`trove login` defaults to a browser-based device-code flow: the CLI prints a
+short user code, opens the dashboard, the user approves there, and the CLI
+collects a freshly minted API key by polling. Pass `--api-key` (or pipe one
+on stdin) to skip the browser dance — useful for CI and headless boxes.
 """
 
 from __future__ import annotations
+
+import sys
+import time
+import webbrowser
 
 import click
 import httpx
@@ -17,6 +23,93 @@ def _mask_key(api_key: str) -> str:
     if len(api_key) <= 8:
         return "***"
     return f"{api_key[:14]}…{api_key[-4:]}"
+
+
+def _device_login(base_url: str, *, open_browser: bool = True) -> tuple[str, str]:
+    """Run a device-code login against `base_url`.
+
+    Returns `(api_key, workspace_id)`. Raises `click.ClickException` on
+    timeout, denial, or network failure.
+
+    Connects to three endpoints:
+      POST /v1/auth/device/start   → device_code, user_code, verify URL, interval
+      POST /v1/auth/device/poll    → status: pending | approved | denied | expired
+    The browser-side approval lives at `verification_uri_complete`.
+    """
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        try:
+            r = client.post("/v1/auth/device/start")
+        except httpx.HTTPError as e:
+            raise click.ClickException(
+                f"could not start login at {base_url}: {e}\n"
+                f"Pass --api-key to skip the browser flow, or `--base-url` for a different host."
+            )
+        if r.status_code == 404:
+            # Server is older than the device-flow rollout — fall back caller-side.
+            raise click.ClickException(
+                "this Trove server doesn't support browser login yet. "
+                "Pass --api-key (or set TROVE_API_KEY) to log in with a key from the dashboard."
+            )
+        r.raise_for_status()
+        start = r.json()
+
+        device_code  = start["device_code"]
+        user_code    = start["user_code"]
+        verify_url   = start.get("verification_uri_complete") or start["verification_uri"]
+        interval     = max(1, int(start.get("interval", 2)))
+        expires_in   = int(start.get("expires_in", 600))
+
+        click.echo("")
+        click.echo("Opening your browser to authorize this CLI…")
+        click.echo("")
+        click.secho(f"  Code: {user_code}", fg="cyan", bold=True)
+        click.echo(f"  URL:  {verify_url}")
+        click.echo("")
+        click.echo("Confirm the code matches in your browser, then approve.")
+        click.echo("(Pass --api-key or pipe a key on stdin to skip the browser flow.)")
+        click.echo("")
+
+        if open_browser:
+            try:
+                webbrowser.open(verify_url, new=2)
+            except Exception:
+                # Headless boxes or weird desktop configs — the URL is already
+                # printed above so the user can copy/paste manually.
+                pass
+
+        deadline = time.monotonic() + expires_in
+        # Render a quiet progress message so the wait doesn't look frozen.
+        # No spinner — we want CI logs to stay clean.
+        last_dot = 0.0
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            try:
+                pr = client.post("/v1/auth/device/poll", json={"device_code": device_code})
+            except httpx.HTTPError:
+                # Transient network blips during a 10-min wait are common —
+                # keep polling. The deadline still bounds us.
+                continue
+            if pr.status_code >= 500:
+                continue
+            pr.raise_for_status()
+            body   = pr.json()
+            status = body.get("status")
+            if status == "approved":
+                click.echo("")  # newline after the dots
+                return body["api_key"], body["workspace_id"]
+            if status == "denied":
+                raise click.ClickException("authorization denied in the browser.")
+            if status == "expired":
+                raise click.ClickException(
+                    "code expired before approval. Run `trove login` again."
+                )
+            # status == "pending" — emit a dot every ~5s so the user sees life.
+            now = time.monotonic()
+            if now - last_dot >= 5.0:
+                click.echo(".", nl=False, err=True)
+                last_dot = now
+
+        raise click.ClickException("login timed out. Run `trove login` again.")
 
 
 @click.command()
@@ -34,7 +127,7 @@ def _mask_key(api_key: str) -> str:
     hidden=True,
     help="Deprecated alias for --save-as.",
 )
-@click.option("--api-key", default=None, help="API key (or paste at the prompt).")
+@click.option("--api-key", default=None, help="API key. Skips the browser flow.")
 @click.option(
     "--workspace",
     "workspace_id",
@@ -47,6 +140,12 @@ def _mask_key(api_key: str) -> str:
     help="Default namespace for runtime commands (run/ls/cat/...).",
 )
 @click.option("--base-url", default=config.DEFAULT_BASE_URL, show_default=True)
+@click.option(
+    "--no-browser",
+    is_flag=True,
+    default=False,
+    help="Skip the browser-based device flow; prompt for a key instead.",
+)
 @click.pass_context
 @handle_errors
 def login(
@@ -57,12 +156,19 @@ def login(
     workspace_id: str | None,
     namespace: str | None,
     base_url: str,
+    no_browser: bool,
 ) -> None:
     """Save credentials so other commands can talk to the API.
 
-    Get keys at https://trovefiles.dev/dashboard/keys. The CLI will call
-    `/v1/me` to discover the workspace ID (and namespace lock, if any) so you
-    only need to paste the API key.
+    By default opens your browser to authorize this CLI — you'll see a short
+    code; confirm it matches in the dashboard and approve. A fresh API key is
+    minted and saved here automatically.
+
+    \b
+    To skip the browser:
+      trove login --api-key trove-sk-...        # explicit key
+      echo $TROVE_KEY | trove login             # piped from stdin (CI)
+      trove login --no-browser                  # paste at the prompt
 
     \b
     The profile to *save under* is set with `--save-as`. The root-level
@@ -98,11 +204,22 @@ def login(
             f"--save-as ({profile_name!r}) and --profile ({legacy_profile_name!r}) disagree"
         )
 
+    discovered_workspace_from_device: str | None = None
     if not api_key:
-        click.echo("Get a key at https://trovefiles.dev/dashboard/keys.")
-        api_key = click.prompt("API key", hide_input=True).strip()
-    if not api_key:
-        raise click.ClickException("missing API key")
+        # Pipe-friendly path: someone redirected a key into stdin (CI, scripts,
+        # `pass show trove | trove login`). No prompt, no browser — just consume.
+        if not sys.stdin.isatty():
+            api_key = sys.stdin.readline().strip()
+            if not api_key:
+                raise click.ClickException("missing API key on stdin")
+        elif no_browser:
+            click.echo("Get a key at https://trovefiles.dev/dashboard/keys.")
+            api_key = click.prompt("API key", hide_input=True).strip()
+            if not api_key:
+                raise click.ClickException("missing API key")
+        else:
+            # Default: browser-based device flow.
+            api_key, discovered_workspace_from_device = _device_login(base_url)
 
     # Probe the API once to validate the key and (when missing) discover the
     # workspace_id via /v1/me. A typo blows up here, not on the next command.
@@ -133,8 +250,13 @@ def login(
         workspace_id = workspace_id or api_workspace
         discovered_ns = me.get("namespace")
     elif not workspace_id:
-        # Older API without /v1/me: fall back to a prompt + format check.
-        workspace_id = click.prompt("Workspace ID (ws-...)").strip()
+        # Older API without /v1/me. The device flow already returned a
+        # workspace_id; use that. Otherwise (paste flow on an old server) fall
+        # back to a prompt + format check.
+        if discovered_workspace_from_device:
+            workspace_id = discovered_workspace_from_device
+        else:
+            workspace_id = click.prompt("Workspace ID (ws-...)").strip()
 
     if not workspace_id:
         raise click.ClickException("could not determine workspace_id")

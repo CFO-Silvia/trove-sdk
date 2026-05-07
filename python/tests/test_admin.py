@@ -56,3 +56,22 @@ def test_raises_on_403():
         with pytest.raises(TroveError) as exc_info:
             admin.create_key("fail")
     assert exc_info.value.status_code == 403
+
+
+@respx.mock
+def test_from_api_key_discovers_workspace_id():
+    respx.get(f"{BASE}/v1/me").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "workspace_id": WS_ID,
+                "key_id": "key-admin",
+                "scope": "admin",
+                "namespace": None,
+            },
+        )
+    )
+    respx.get(KEYS_URL).mock(return_value=httpx.Response(200, json={"keys": []}))
+    with TroveAdminClient.from_api_key("trove-sk-admin", base_url=BASE) as admin:
+        # Confirm the discovered workspace_id is what the keys endpoint sees.
+        admin.list_keys()

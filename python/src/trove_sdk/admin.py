@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from .exceptions import TroveError
+from .exceptions import raise_for_response as _raise_for
 from .models import (
     KeyCreated,
     KeyMetadata,
@@ -12,15 +12,6 @@ from .models import (
 )
 
 _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
-
-
-def _raise_for(response: httpx.Response) -> None:
-    if not response.is_success:
-        try:
-            detail = response.json().get("detail", response.text)
-        except Exception:
-            detail = response.text
-        raise TroveError(detail, status_code=response.status_code)
 
 
 def _parse_key_metadata(d: dict) -> KeyMetadata:
@@ -97,6 +88,30 @@ class TroveAdminClient:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
+
+    @classmethod
+    def from_api_key(
+        cls,
+        api_key: str,
+        *,
+        base_url: str = _DEFAULT_BASE_URL,
+        timeout: float = 30.0,
+    ) -> "TroveAdminClient":
+        """Discover ``workspace_id`` from ``/v1/me`` and construct the client.
+
+        Saves callers from fishing the workspace ID out of the dashboard
+        when the key already encodes it. Raises ``TroveError`` if the key
+        is invalid or the server is older than ``/v1/me``.
+        """
+        with httpx.Client(
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        ) as probe:
+            resp = probe.get("/v1/me")
+            _raise_for(resp)
+            workspace_id = resp.json()["workspace_id"]
+        return cls(api_key, workspace_id, base_url=base_url, timeout=timeout)
 
     def _keys_url(self) -> str:
         return f"/v1/workspaces/{self._workspace_id}/keys"
@@ -185,6 +200,25 @@ class AsyncTroveAdminClient:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
+
+    @classmethod
+    async def from_api_key(
+        cls,
+        api_key: str,
+        *,
+        base_url: str = _DEFAULT_BASE_URL,
+        timeout: float = 30.0,
+    ) -> "AsyncTroveAdminClient":
+        """Discover ``workspace_id`` from ``/v1/me`` and construct the client."""
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        ) as probe:
+            resp = await probe.get("/v1/me")
+            _raise_for(resp)
+            workspace_id = resp.json()["workspace_id"]
+        return cls(api_key, workspace_id, base_url=base_url, timeout=timeout)
 
     def _keys_url(self) -> str:
         return f"/v1/workspaces/{self._workspace_id}/keys"

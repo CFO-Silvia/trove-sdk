@@ -48,6 +48,34 @@ class FileInfo:
     modified_at: str
 
 
+class ListResult(list):
+    """Result of `list_dir` — a `list[FileInfo]` plus a `truncated` flag.
+
+    Subclasses `list` so existing code (`for e in client.list_dir(...)`,
+    `[f for f in client.list_dir(...) if ...]`, `len(...)`, indexing) keeps
+    working unchanged. The `truncated` attribute is True when the server
+    capped the response (default cap: 1000 entries / 20 levels deep).
+    """
+
+    truncated: bool
+
+    def __init__(self, entries=(), *, truncated: bool = False):
+        super().__init__(entries)
+        self.truncated = truncated
+
+
+@dataclass
+class BytesContent:
+    """Result of `read_bytes_full` — raw content plus truncation metadata.
+
+    `read_bytes` returns just the bytes for the common case; use this when
+    you need to know whether the server hit its 100 MB response cap.
+    """
+    content: bytes
+    truncated: bool
+    size_bytes: int | None  # full file size from the X-Trove-Size header, may exceed len(content)
+
+
 @dataclass
 class FileContent:
     """Result of `read_text` / `read_bytes`."""
