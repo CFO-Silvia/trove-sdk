@@ -210,6 +210,37 @@ with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
     client.delete("workspace/data/notes.txt")
 ```
 
+### Persistent shell context (init.sh)
+
+`exec` is stateless by default — every call gets a fresh shell. If you find
+yourself prefixing every command with `cd workspace/data && source .venv/bin/activate && ...`,
+set a namespace-level init script instead. The server sources it before every
+`/exec` call, so cwd, env vars, activated venvs, and shell functions all carry
+across calls — *and* across agent process restarts, because the script lives in
+the namespace volume.
+
+```python
+client.set_init("""
+cd workspace/data
+source .venv/bin/activate
+export REPORT_DATE=2026-05-06
+""")
+
+client.exec("python analyze.py")    # cwd=workspace/data, venv active, env set
+client.exec("pytest tests/")        # same context — no re-setup
+
+client.get_init()                   # → the script text, or None if unset
+client.clear_init()                 # → True if removed, False if never set
+```
+
+It's stored at `workspace/.trove/init.sh`. Snapshots include it, events fire
+when it changes, and namespace isolation holds. If the script errors at
+runtime, stderr is interleaved with your command's output but the command
+still runs — use `exec_detailed` to see them separately.
+
+Async clients have the same three methods: `await client.set_init(...)`,
+`await client.get_init()`, `await client.clear_init()`.
+
 ### Async
 
 ```python
@@ -309,6 +340,9 @@ A minimal subscribe + verify script lives in
 | `read_file(path)` | Read metadata + content. Returns `FileContent` (`encoding` field flags binary). |
 | `list_dir(path)` | List a directory. Returns `list[FileInfo]`. |
 | `delete(path)` | Delete a file or directory. Returns the deleted path. |
+| `set_init(text)` | Write `workspace/.trove/init.sh` — sourced before every `/exec` call. Returns `FileResult`. |
+| `get_init()` | Read the init script. Returns the text, or `None` if unset. |
+| `clear_init()` | Delete the init script. Returns `True` if it existed, `False` otherwise. |
 | `create_snapshot(label?)` | Tar the namespace and store it. Returns `Snapshot`. |
 | `list_snapshots()` | List snapshots newest-first. Returns `list[Snapshot]`. |
 | `restore_snapshot(id)` | Wipe the namespace and restore. Returns # files restored. |

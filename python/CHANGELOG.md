@@ -2,6 +2,48 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.7.3 — 2026-05-06
+
+### Added — Persistent shell context
+
+- **`set_init(text)` / `get_init()` / `clear_init()`** on both `TroveClient`
+  and `AsyncTroveClient`. Writes a script to `workspace/.trove/init.sh`
+  that the `/exec` endpoint sources before every command — so `cd`,
+  `export`, activated venvs, and shell functions carry across calls (and
+  across agent process restarts, because it lives in the namespace volume).
+  Replaces the "prefix every command with `cd ... && source ... && ...`"
+  pattern. Requires a server that honors the convention; older servers
+  store the file but won't source it.
+
+### Added — MCP server
+
+- **`pip install 'trove-sdk[mcp]'`** ships an MCP server that exposes Trove
+  to any MCP-compatible AI client (Claude Desktop, Cursor, Claude Code).
+  The server runs locally on the user's machine over stdio; configuration
+  arrives via `TROVE_API_KEY` / `TROVE_NAMESPACE` env vars baked into the
+  client's config block.
+- **Three tools**, deliberately tight to keep model performance up:
+  - `trove_exec(command, stdin?)` — every preinstalled Unix tool through
+    one entry point (`jq`, `awk`, `pdftotext`, `ffmpeg`, `python3`, …).
+  - `trove_read(path)` — UTF-8 text read.
+  - `trove_write(path, content)` — UTF-8 text write.
+
+### Added — CLI
+
+- **`trove mcp install`** auto-detects Claude Desktop and Cursor and writes
+  a server entry into each one's config file. Project-scoped Claude Code
+  via `--client claude-code` (writes `./.mcp.json` in cwd). Existing
+  servers in the same config are preserved — atomic write through a
+  sibling tempfile so a crash mid-write doesn't corrupt the user's
+  setup.
+- **`trove mcp uninstall`** removes the entry without touching anything else.
+- **`trove mcp status`** shows which clients have it wired up and which
+  namespace each is pointed at.
+
+The `[mcp]` extra is optional — base `pip install trove-sdk` stays slim.
+The CLI subcommand probes for the `mcp` package up front and surfaces a
+clean install hint instead of a raw `ImportError`.
+
 ## 0.7.2 — 2026-05-06
 
 ### Changed
