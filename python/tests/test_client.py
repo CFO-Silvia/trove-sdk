@@ -202,6 +202,95 @@ def test_exec_legacy_forwards_stdin():
     assert body["stdin"] == "payload"
 
 
+# ── exec_chain (multi-step shell flow in one exec) ───────────────────────────
+
+
+@respx.mock
+def test_exec_chain_joins_with_and_in_one_request():
+    """Multi-step flows persist cwd/env *within* one exec — not across calls.
+    The chain wraps each command in `( ... )` and joins with `&&` so a stray
+    internal `||` in one step can't swallow the next.
+    """
+    import json as _j
+    route = respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={"exit_code": 0, "stdout": "ok\n", "stderr": "", "duration_ms": 12},
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        result = c.exec_chain([
+            "cd workspace/data",
+            "source .venv/bin/activate",
+            "python analyze.py",
+        ])
+    body = _j.loads(route.calls[0].request.content)
+    assert body["command"] == (
+        "( cd workspace/data ) && ( source .venv/bin/activate ) && ( python analyze.py )"
+    )
+    assert "stdin" not in body
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+
+
+@respx.mock
+def test_exec_chain_forwards_stdin():
+    import json as _j
+    route = respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={"exit_code": 0, "stdout": "5\n", "stderr": "", "duration_ms": 1},
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        c.exec_chain(["cat", "wc -c"], stdin="hello")
+    body = _j.loads(route.calls[0].request.content)
+    assert body["stdin"] == "hello"
+    assert body["command"] == "( cat ) && ( wc -c )"
+
+
+@respx.mock
+def test_exec_chain_single_command():
+    """A one-element chain is still wrapped — keeps the call site shape stable."""
+    import json as _j
+    route = respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200, json={"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1}
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        c.exec_chain(["true"])
+    body = _j.loads(route.calls[0].request.content)
+    assert body["command"] == "( true )"
+
+
+def test_exec_chain_rejects_empty_list():
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        with pytest.raises(ValueError):
+            c.exec_chain([])
+
+
+def test_exec_chain_rejects_blank_command():
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        with pytest.raises(ValueError):
+            c.exec_chain(["echo hi", "   "])
+
+
+@respx.mock
+async def test_async_exec_chain_joins_with_and():
+    import json as _j
+    route = respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1},
+        )
+    )
+    async with AsyncTroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        await c.exec_chain(["cd workspace", "ls"])
+    body = _j.loads(route.calls[0].request.content)
+    assert body["command"] == "( cd workspace ) && ( ls )"
+
+
 # ── read_bytes (binary download) ──────────────────────────────────────────────
 
 

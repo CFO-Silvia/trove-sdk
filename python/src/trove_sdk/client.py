@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import BinaryIO
+from typing import BinaryIO, Sequence
 
 import httpx
 
@@ -88,6 +88,24 @@ def _parse_bytes_content(resp: httpx.Response) -> BytesContent:
 _raise_for = raise_for_response  # back-compat alias for any downstream that imported it
 
 
+def _join_chain(commands: Sequence[str]) -> str:
+    """Join a sequence of shell commands with ``&&`` for a single exec invocation.
+
+    Each command is wrapped in ``( ... )`` so its parse boundary is unambiguous
+    and an internal ``&&`` / ``||`` doesn't accidentally swallow the join.
+    Empty / whitespace-only entries are rejected so a stray blank string
+    can't short-circuit the chain.
+    """
+    if not commands:
+        raise ValueError("exec_chain requires at least one command")
+    parts = []
+    for i, cmd in enumerate(commands):
+        if not isinstance(cmd, str) or not cmd.strip():
+            raise ValueError(f"exec_chain command at index {i} is empty")
+        parts.append(f"( {cmd} )")
+    return " && ".join(parts)
+
+
 class TroveClient:
     """Synchronous client for Trove filesystem operations."""
 
@@ -143,6 +161,27 @@ class TroveClient:
         resp = self._http.post("/v1/exec", json=body)
         _raise_for(resp)
         return _parse_exec_result(resp.json())
+
+    def exec_chain(
+        self, commands: Sequence[str], *, stdin: str | None = None
+    ) -> ExecResult:
+        """Run a list of commands as one chained shell invocation.
+
+        Each ``exec`` call gets a fresh shell, so a ``cd`` (or any state set
+        inside the command) doesn't carry over to the next call. ``exec_chain``
+        joins the commands with ``&&`` and runs them as a single exec, so
+        ``cd`` / ``export`` / variables persist *within* the chain. The chain
+        short-circuits on the first non-zero exit, just like shell ``&&``.
+
+        For setup that should apply to *every* call (a venv, a default cwd),
+        use :meth:`set_init` instead — its prelude lives in the namespace
+        volume and survives across calls and process restarts.
+
+        The same 30-second wall-clock timeout applies to the whole chain.
+        For long-running multi-step workflows, write progress to files so a
+        retry can resume.
+        """
+        return self.exec_detailed(_join_chain(commands), stdin=stdin)
 
     def write(self, path: str, content: str) -> FileResult:
         """Write a UTF-8 text file at path (created or overwritten)."""
@@ -228,9 +267,11 @@ class TroveClient:
     def read(self, path: str) -> str | bytes:
         """Read a file, returning ``str`` for UTF-8 text or ``bytes`` for binary.
 
-        One round-trip whether the file is text or binary — saves the
-        ``read_text`` → 415 → ``read_bytes`` retry pattern. Prefer
-        ``read_text`` / ``read_bytes`` when the type is known up front.
+        Hits ``/v1/files/content`` first to detect the encoding. For text the
+        content comes back in that one response; for binary a second request
+        to ``/files/{path}`` fetches the raw bytes. So: one round-trip for
+        text, two for binary. Prefer :meth:`read_text` / :meth:`read_bytes`
+        when the type is known up front.
         """
         info = self.read_file(path)
         if info.encoding == "binary":
@@ -340,6 +381,14 @@ class AsyncTroveClient:
         _raise_for(resp)
         return _parse_exec_result(resp.json())
 
+    async def exec_chain(
+        self, commands: Sequence[str], *, stdin: str | None = None
+    ) -> ExecResult:
+        """Run a list of commands as one chained shell invocation.
+        See :meth:`TroveClient.exec_chain`.
+        """
+        return await self.exec_detailed(_join_chain(commands), stdin=stdin)
+
     async def write(self, path: str, content: str) -> FileResult:
         resp = await self._http.post("/write", json={"path": _norm_path(path), "content": content})
         _raise_for(resp)
@@ -394,7 +443,12 @@ class AsyncTroveClient:
         )
 
     async def read(self, path: str) -> str | bytes:
-        """Read a file, returning ``str`` for UTF-8 text or ``bytes`` for binary."""
+        """Read a file, returning ``str`` for UTF-8 text or ``bytes`` for binary.
+
+        One round-trip for text, two for binary (encoding is detected on the
+        first call to ``/v1/files/content``; binary triggers a follow-up to
+        ``/files/{path}``). See :meth:`TroveClient.read`.
+        """
         info = await self.read_file(path)
         if info.encoding == "binary":
             return await self.read_bytes(path)

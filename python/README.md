@@ -221,11 +221,50 @@ with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
     client.delete("workspace/data/notes.txt")
 ```
 
+### What persists between exec calls
+
+Each `exec` runs in a fresh shell. The **filesystem** is the only thing that
+carries between calls — anything that lives only in shell state is gone.
+
+| Persists across exec calls | Doesn't persist |
+|---|---|
+| Files in `workspace/` | `cwd` from a prior `cd` |
+| `init.sh` prelude (re-runs every call) | env vars `export`ed inside an exec |
+| Snapshots | Background processes |
+| | Activated venvs (use `init.sh` instead) |
+| | Shell variables / functions defined inline |
+
+Three rules of thumb:
+
+1. **Deterministic setup goes in `init.sh`.** A default `cd`, a venv to
+   activate, env vars that should be present every call. See below.
+2. **Computed state goes in a file.** If one step produces a value the next
+   step needs, write it to a file (`workspace/.cache/token`) and read it
+   back. Don't `export FOO=$(...)` and expect FOO to exist next call.
+3. **Multi-step flows that share state run in one `exec_chain`.** Joins
+   commands with `&&` server-side, so `cd` / `export` / variables hold for
+   the whole chain. The 30-second wall clock applies to the chain as a
+   whole — for longer flows, write progress to files so a retry can resume.
+
+```python
+# Multi-step within one shell — cwd and variables hold:
+client.exec_chain([
+    "cd workspace/data",
+    "TOKEN=$(curl -s https://api.example.com/token)",
+    'curl -H "Authorization: $TOKEN" https://api.example.com/feed -o feed.json',
+])
+
+# Separate calls — TOKEN would be lost between them. Persist via a file:
+client.exec("curl -s https://api.example.com/token > workspace/.token")
+client.exec('curl -H "Authorization: $(cat workspace/.token)" ... -o feed.json')
+```
+
 ### Persistent shell context (init.sh)
 
-Every `exec` is a fresh shell, so commands that need setup (a `cd`, a venv, an
-env var) end up doing it on every call. `set_init` writes a script that the
-server sources before every command — set the prelude once, run cleanly forever.
+`init.sh` covers the "every command repeats the same setup" case — a default
+`cd`, an activated venv, exported env vars. The server sources it before
+every command, so the prelude survives across calls *and* across agent
+process restarts (it lives in the namespace volume).
 
 ```python
 # Without init.sh — every command repeats the setup
@@ -349,9 +388,10 @@ A minimal subscribe + verify script lives in
 |--------|-------------|
 | `exec(command, *, stdin=None)` | Run a shell command. Returns stdout as a string (legacy text response). |
 | `exec_detailed(command, *, stdin=None)` | Run a shell command. Returns `ExecResult(exit_code, stdout, stderr, duration_ms)`. |
+| `exec_chain(commands, *, stdin=None)` | Run a list of commands in one shell, joined with `&&`. Returns `ExecResult`. Use when steps need to share `cwd` / variables. |
 | `write(path, content)` | Write a UTF-8 text file. Returns `FileResult`. |
 | `upload(path, data)` | Upload bytes or a file-like object. Returns `FileResult`. |
-| `read(path)` | Read a file. Returns `str` for UTF-8 or `bytes` for binary — one round-trip whether you know the type or not. |
+| `read(path)` | Read a file. Returns `str` for UTF-8 or `bytes` for binary. One round-trip for text, two for binary (encoding is detected on the first call). Prefer `read_text` / `read_bytes` when the type is known. |
 | `read_text(path)` | Read a UTF-8 text file (1 MB cap). Raises `TroveError` on binary content. |
 | `read_bytes(path)` | Download a file's raw bytes (100 MB cap). Binary-safe. |
 | `read_bytes_full(path)` | Same as `read_bytes` but returns a `BytesContent(content, truncated, size_bytes)` so you can detect when the 100 MB cap was hit. |

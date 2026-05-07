@@ -2,6 +2,31 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.7.6 — 2026-05-07
+
+### Added — `exec_chain(commands)`
+
+- **`exec_chain([cmd, cmd, ...])`** on `TroveClient` and `AsyncTroveClient`.
+  Joins the commands with `&&` server-side and runs them as one exec, so
+  `cd`, `export`, and shell variables hold for the whole chain. Returns
+  `ExecResult`. Use it when a multi-step flow needs to share state — a
+  separate `exec()` call gets a fresh shell, so anything outside the
+  filesystem is gone.
+- Each command is wrapped in `( ... )` so an internal `&&` / `||` doesn't
+  swallow the join. Empty / whitespace-only entries raise `ValueError`.
+- The 30-second wall-clock timeout still applies to the chain as a whole.
+  For longer flows, write progress to files so a retry can resume.
+
+### Changed — Docs
+
+- New "What persists between exec calls" section in the README + dashboard
+  docs makes the per-call shell model explicit: the filesystem persists,
+  shell state doesn't. Three rules of thumb (deterministic setup → `init.sh`,
+  cross-call computed state → file, multi-step shared state → `exec_chain`).
+- Corrected `read(path)` docstring — was claiming "one round-trip" universally,
+  but binary files take two trips (encoding detection + content fetch).
+  One trip for text, two for binary.
+
 ## 0.7.5 — 2026-05-07
 
 ### Added — Browser-based `trove login`
