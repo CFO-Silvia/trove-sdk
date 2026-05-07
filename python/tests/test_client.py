@@ -208,8 +208,9 @@ def test_exec_legacy_forwards_stdin():
 @respx.mock
 def test_exec_chain_joins_with_and_in_one_request():
     """Multi-step flows persist cwd/env *within* one exec — not across calls.
-    The chain wraps each command in `( ... )` and joins with `&&` so a stray
-    internal `||` in one step can't swallow the next.
+    The chain wraps each command in a brace group ``{ ... ; }`` and joins with
+    ``&&`` so a stray internal ``||`` in one step can't swallow the next, while
+    ``cd``/``export``/variables still persist (subshells would break that).
     """
     import json as _j
     route = respx.post(f"{BASE}/v1/exec").mock(
@@ -226,7 +227,7 @@ def test_exec_chain_joins_with_and_in_one_request():
         ])
     body = _j.loads(route.calls[0].request.content)
     assert body["command"] == (
-        "( cd workspace/data ) && ( source .venv/bin/activate ) && ( python analyze.py )"
+        "{ cd workspace/data; } && { source .venv/bin/activate; } && { python analyze.py; }"
     )
     assert "stdin" not in body
     assert isinstance(result, ExecResult)
@@ -246,7 +247,7 @@ def test_exec_chain_forwards_stdin():
         c.exec_chain(["cat", "wc -c"], stdin="hello")
     body = _j.loads(route.calls[0].request.content)
     assert body["stdin"] == "hello"
-    assert body["command"] == "( cat ) && ( wc -c )"
+    assert body["command"] == "{ cat; } && { wc -c; }"
 
 
 @respx.mock
@@ -261,7 +262,28 @@ def test_exec_chain_single_command():
     with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
         c.exec_chain(["true"])
     body = _j.loads(route.calls[0].request.content)
-    assert body["command"] == "( true )"
+    assert body["command"] == "{ true; }"
+
+
+def test_exec_chain_persists_cwd_and_vars_through_real_shell():
+    """Run the joined string through a real bash. Subshell wrapping (the prior
+    bug) silently dropped cwd/export/vars — this test catches a regression by
+    actually executing the chain instead of just asserting its shape.
+    """
+    import shutil
+    import subprocess
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    from trove_sdk.client import _join_chain
+    cmd = _join_chain([
+        "cd /tmp",
+        'TOKEN="abc123"',
+        'echo "$TOKEN $PWD"',
+    ])
+    out = subprocess.run([bash, "-c", cmd], capture_output=True, text=True, timeout=10)
+    assert out.returncode == 0, out
+    assert "abc123 /tmp" in out.stdout, out.stdout
 
 
 def test_exec_chain_rejects_empty_list():
@@ -288,7 +310,7 @@ async def test_async_exec_chain_joins_with_and():
     async with AsyncTroveClient("trove-sk-test", "ns", base_url=BASE) as c:
         await c.exec_chain(["cd workspace", "ls"])
     body = _j.loads(route.calls[0].request.content)
-    assert body["command"] == "( cd workspace ) && ( ls )"
+    assert body["command"] == "{ cd workspace; } && { ls; }"
 
 
 # ── read_bytes (binary download) ──────────────────────────────────────────────

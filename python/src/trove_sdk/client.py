@@ -91,8 +91,11 @@ _raise_for = raise_for_response  # back-compat alias for any downstream that imp
 def _join_chain(commands: Sequence[str]) -> str:
     """Join a sequence of shell commands with ``&&`` for a single exec invocation.
 
-    Each command is wrapped in ``( ... )`` so its parse boundary is unambiguous
-    and an internal ``&&`` / ``||`` doesn't accidentally swallow the join.
+    Each command is wrapped in ``{ ... ; }`` (a brace group, not a subshell)
+    so its parse boundary is unambiguous — an internal ``&&`` / ``||`` won't
+    swallow the join — while ``cd`` / ``export`` / shell variables still
+    persist across steps. Subshells (``( ... )``) would isolate that state
+    and silently break the multi-step flow that ``exec_chain`` is for.
     Empty / whitespace-only entries are rejected so a stray blank string
     can't short-circuit the chain.
     """
@@ -102,7 +105,7 @@ def _join_chain(commands: Sequence[str]) -> str:
     for i, cmd in enumerate(commands):
         if not isinstance(cmd, str) or not cmd.strip():
             raise ValueError(f"exec_chain command at index {i} is empty")
-        parts.append(f"( {cmd} )")
+        parts.append("{ " + cmd + "; }")
     return " && ".join(parts)
 
 
