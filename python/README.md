@@ -23,10 +23,14 @@ detected client — no JSON editing.
 
 ```bash
 pip install 'trove-sdk[cli,mcp]'
-trove login --api-key trove-sk-... --namespace my-project
+trove login                             # opens your browser to authorize
 trove mcp install                       # every detected client
 # or scope it: --client claude-desktop, --client cursor, --client claude-code
 ```
+
+Want a non-default namespace? Add `--namespace my-project` to either
+`trove login` or `trove mcp install`. CI / headless boxes can pass
+`--api-key trove-sk-...` to skip the browser.
 
 Restart the client and your agent gets three tools:
 
@@ -35,6 +39,7 @@ Restart the client and your agent gets three tools:
 | `trove_exec(command, stdin?)` | Run any shell command in your workspace. `jq`, `awk`, `pdftotext`, `ffmpeg`, `python3`, etc. preinstalled. |
 | `trove_read(path)` | Read a UTF-8 text file (1 MB cap). |
 | `trove_write(path, content)` | Write a UTF-8 text file. |
+| `trove_put_base64(path, content_b64)` | Write a binary file (PDF, image, audio) from base64 — saves the `base64 -d` shell dance. |
 
 `trove mcp status` shows which clients are wired up; `trove mcp uninstall`
 removes the entry. The MCP server reads `TROVE_API_KEY` / `TROVE_NAMESPACE`
@@ -101,13 +106,19 @@ A `trove` command ships in the `[cli]` extra. After installing, log in once and
 then drive your workspace from the terminal:
 
 ```bash
-# One-time setup. The CLI calls /v1/me to discover your workspace_id from
-# the key, so you only paste one secret. --namespace is optional.
-trove login --api-key trove-sk-... --namespace alice
+# One-time setup — opens your browser, prints a short code to confirm,
+# approve in the dashboard, and a freshly-minted key lands in
+# ~/.trove/config.json. No paste-back.
+trove login
+
+# Skip the browser (CI / headless):
+trove login --api-key trove-sk-...     # explicit key
+echo $TROVE_KEY | trove login          # piped from stdin
+trove login --no-browser               # paste at the prompt
 
 # Save under a non-default profile name:
-trove login --save-as staging --api-key trove-sk-...
-trove --profile staging tail        # use it later
+trove login --save-as staging
+trove --profile staging tail           # use it later
 
 # Filesystem (mirrors the SDK)
 trove run "ls workspace/"          # POST /v1/exec  (exit code propagates!)
@@ -212,31 +223,36 @@ with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
 
 ### Persistent shell context (init.sh)
 
-`exec` is stateless by default — every call gets a fresh shell. If you find
-yourself prefixing every command with `cd workspace/data && source .venv/bin/activate && ...`,
-set a namespace-level init script instead. The server sources it before every
-`/exec` call, so cwd, env vars, activated venvs, and shell functions all carry
-across calls — *and* across agent process restarts, because the script lives in
-the namespace volume.
+Every `exec` is a fresh shell, so commands that need setup (a `cd`, a venv, an
+env var) end up doing it on every call. `set_init` writes a script that the
+server sources before every command — set the prelude once, run cleanly forever.
 
 ```python
+# Without init.sh — every command repeats the setup
+client.exec("cd workspace/data && source .venv/bin/activate && python analyze.py")
+client.exec("cd workspace/data && source .venv/bin/activate && pytest tests/")
+
+# With init.sh — set the prelude once
 client.set_init("""
 cd workspace/data
 source .venv/bin/activate
-export REPORT_DATE=2026-05-06
 """)
-
-client.exec("python analyze.py")    # cwd=workspace/data, venv active, env set
+client.exec("python analyze.py")    # cwd, venv, env all carry over
 client.exec("pytest tests/")        # same context — no re-setup
 
 client.get_init()                   # → the script text, or None if unset
 client.clear_init()                 # → True if removed, False if never set
 ```
 
-It's stored at `workspace/.trove/init.sh`. Snapshots include it, events fire
-when it changes, and namespace isolation holds. If the script errors at
-runtime, stderr is interleaved with your command's output but the command
-still runs — use `exec_detailed` to see them separately.
+It's just a file at `workspace/.trove/init.sh` — snapshots include it, webhook
+events fire when it changes, namespace isolation holds. Each call still gets a
+fresh shell; only the prelude carries over, not state from prior commands.
+Errors in the prelude write to stderr but don't block the user command — but
+**don't put `exit` in the script**: it kills the shell before your command runs.
+
+> **`workspace/.trove/` is reserved.** Write only via `set_init` /
+> `get_init` / `clear_init`; direct `write()` calls into that directory may
+> be intercepted or rejected by future server versions.
 
 Async clients have the same three methods: `await client.set_init(...)`,
 `await client.get_init()`, `await client.clear_init()`.
@@ -335,10 +351,12 @@ A minimal subscribe + verify script lives in
 | `exec_detailed(command, *, stdin=None)` | Run a shell command. Returns `ExecResult(exit_code, stdout, stderr, duration_ms)`. |
 | `write(path, content)` | Write a UTF-8 text file. Returns `FileResult`. |
 | `upload(path, data)` | Upload bytes or a file-like object. Returns `FileResult`. |
+| `read(path)` | Read a file. Returns `str` for UTF-8 or `bytes` for binary — one round-trip whether you know the type or not. |
 | `read_text(path)` | Read a UTF-8 text file (1 MB cap). Raises `TroveError` on binary content. |
 | `read_bytes(path)` | Download a file's raw bytes (100 MB cap). Binary-safe. |
+| `read_bytes_full(path)` | Same as `read_bytes` but returns a `BytesContent(content, truncated, size_bytes)` so you can detect when the 100 MB cap was hit. |
 | `read_file(path)` | Read metadata + content. Returns `FileContent` (`encoding` field flags binary). |
-| `list_dir(path)` | List a directory. Returns `list[FileInfo]`. |
+| `list_dir(path, *, recursive=False)` | List a directory. Returns `ListResult` — a `list[FileInfo]` subclass with a `.truncated` flag for when the server cap was hit. |
 | `delete(path)` | Delete a file or directory. Returns the deleted path. |
 | `set_init(text)` | Write `workspace/.trove/init.sh` — sourced before every `/exec` call. Returns `FileResult`. |
 | `get_init()` | Read the init script. Returns the text, or `None` if unset. |
@@ -352,8 +370,16 @@ A minimal subscribe + verify script lives in
 
 ### `TroveAdminClient(api_key, workspace_id, *, base_url?)`
 
+Construct directly when you already know `workspace_id`, or call
+`TroveAdminClient.from_api_key(api_key)` to discover it from `/v1/me`:
+
+```python
+admin = TroveAdminClient.from_api_key("trove-sk-admin-...")  # one secret, not two
+```
+
 | Method | Description |
 |--------|-------------|
+| `from_api_key(api_key)` *(classmethod)* | Discover `workspace_id` via `/v1/me` and return a constructed client. |
 | `create_key(name, *, namespace?)` | Mint a new workspace key, optionally scoped to a namespace. |
 | `list_keys()` | List all active keys for the workspace. |
 | `revoke_key(key_id)` | Revoke a key immediately. |
@@ -373,5 +399,29 @@ will not match the signature.
 
 ### Errors
 
-All errors raise `TroveError(message, status_code)`.
-`WebhookSignatureError` is a subclass raised by `verify_webhook`.
+All errors raise `TroveError(message, status_code)`. Common HTTP statuses
+also raise more specific subclasses so retry/recovery logic doesn't have to
+match on integers:
+
+| Status | Class |
+|--------|-------|
+| 401, 403 | `TroveAuthError` |
+| 404 | `TroveNotFoundError` |
+| 408, 504 | `TroveTimeoutError` |
+| 429 | `TroveRateLimitError` |
+| 5xx | `TroveServerError` |
+
+```python
+from trove_sdk import TroveRateLimitError, TroveAuthError
+
+try:
+    client.exec("expensive-job")
+except TroveRateLimitError:
+    backoff_and_retry()
+except TroveAuthError:
+    refresh_session_key()
+```
+
+All five inherit from `TroveError`, so existing `except TroveError:` blocks
+keep catching everything. `WebhookSignatureError` is a `TroveError` subclass
+raised by `verify_webhook`.
