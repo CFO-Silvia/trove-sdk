@@ -5,7 +5,6 @@ Client libraries for [Trove](https://trovefiles.dev) — files and commands for 
 | SDK | Install |
 |-----|---------|
 | [Python](./python/) | `pip install trove-sdk`  ·  `pip install 'trove-sdk[cli]'` for the `trove` CLI |
-| [Node.js](./node/) | `npm install trove-sdk` |
 
 ## What is Trove?
 
@@ -27,16 +26,6 @@ with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
     # Write and run against any text format
     client.write("workspace/data.csv", "name,score\nalice,0.9")
     print(client.exec("awk -F, 'NR>1{print $2}' workspace/data.csv"))
-```
-
-```js
-import { TroveClient } from 'trove-sdk'
-import { readFile } from 'node:fs/promises'
-
-const client = new TroveClient('trove-sk-...', 'alice')
-const pdf = await readFile('report.pdf')
-await client.upload('workspace/report.pdf', pdf)
-await client.exec('pdftotext workspace/report.pdf -')
 ```
 
 ## Multi-tenant key management
