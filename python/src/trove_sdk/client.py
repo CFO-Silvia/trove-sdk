@@ -87,27 +87,39 @@ class TroveClient:
             timeout=timeout,
         )
 
-    def exec(self, command: str) -> str:
+    def exec(self, command: str, *, stdin: str | None = None) -> str:
         """Run a shell command in the workspace. Returns stdout (or error output).
 
         For agent loops where you need to branch on exit code or read stderr
         cleanly, prefer :meth:`exec_detailed` — this method preserves the
         legacy text response (`[exit N]\nstderr\nstdout` on non-zero) for
         backwards compatibility.
+
+        ``stdin`` is piped to the spawned shell as UTF-8. None == /dev/null.
+        Server caps the payload at 1 MB; for binary input, ``upload`` then
+        redirect from disk in the command string (``"jq . < workspace/x"``).
+        Requires server capability ``exec.stdin`` — older servers ignore the
+        field.
         """
-        resp = self._http.post("/exec", json={"command": command})
+        body: dict = {"command": command}
+        if stdin is not None:
+            body["stdin"] = stdin
+        resp = self._http.post("/exec", json=body)
         _raise_for(resp)
         return resp.text
 
-    def exec_detailed(self, command: str) -> ExecResult:
+    def exec_detailed(self, command: str, *, stdin: str | None = None) -> ExecResult:
         """Run a shell command and return structured output.
 
         Hits the JSON-mode `POST /v1/exec` endpoint, so `exit_code`, `stdout`,
         and `stderr` come back as separate fields. The 30-second server-side
         timeout still applies; on timeout the SDK raises :class:`TroveError`
-        with status_code=408.
+        with status_code=408. ``stdin`` semantics match :meth:`exec`.
         """
-        resp = self._http.post("/v1/exec", json={"command": command})
+        body: dict = {"command": command}
+        if stdin is not None:
+            body["stdin"] = stdin
+        resp = self._http.post("/v1/exec", json=body)
         _raise_for(resp)
         return _parse_exec_result(resp.json())
 
@@ -214,13 +226,19 @@ class AsyncTroveClient:
             timeout=timeout,
         )
 
-    async def exec(self, command: str) -> str:
-        resp = await self._http.post("/exec", json={"command": command})
+    async def exec(self, command: str, *, stdin: str | None = None) -> str:
+        body: dict = {"command": command}
+        if stdin is not None:
+            body["stdin"] = stdin
+        resp = await self._http.post("/exec", json=body)
         _raise_for(resp)
         return resp.text
 
-    async def exec_detailed(self, command: str) -> ExecResult:
-        resp = await self._http.post("/v1/exec", json={"command": command})
+    async def exec_detailed(self, command: str, *, stdin: str | None = None) -> ExecResult:
+        body: dict = {"command": command}
+        if stdin is not None:
+            body["stdin"] = stdin
+        resp = await self._http.post("/v1/exec", json=body)
         _raise_for(resp)
         return _parse_exec_result(resp.json())
 

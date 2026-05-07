@@ -2,6 +2,54 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.7.0 — 2026-05-06
+
+### Added — SDK
+
+- **`exec` / `exec_detailed` accept a `stdin` keyword.** Pipe a UTF-8 payload
+  to the spawned shell:
+
+  ```python
+  client.exec_detailed("jq .field", stdin=json.dumps(payload))
+  ```
+
+  None == `/dev/null` (preserves prior behavior). Server caps the payload at
+  1 MB; for binary input, `upload` then redirect from disk
+  (`"tool < workspace/in.bin"`). Mirrored on `AsyncTroveClient`.
+
+### Added — CLI
+
+- **`trove run` auto-forwards piped stdin.** When `sys.stdin` isn't a tty
+  the CLI reads it and passes it to the remote shell:
+
+  ```bash
+  echo '{"x":1}' | trove run "jq .x"
+  cat report.txt | trove run "wc -l"
+  ```
+
+  Pass `--no-stdin` to opt out (CI runners that lie about `isatty`). 1 MB
+  cap, errors out clean above that.
+
+### Fixed — CLI
+
+- **`trove doctor` no longer crashes on Windows** with `UnicodeEncodeError`
+  on the ✓/⚠ glyphs. Reconfigured stdout/stderr to UTF-8 at startup; fixes
+  every command, not just `doctor`.
+
+### Server (deployed alongside)
+
+- **`POST /v1/exec` (and legacy `/exec`)** accept an optional `stdin` field.
+  Old clients that never set it see no behavior change. New clients should
+  probe `GET /v1/me`'s `capabilities` array for `"exec.stdin"` before
+  relying on it; the SDK currently always sends it and lets the server
+  ignore it on older deployments.
+- **`exec.completed` webhook** carries `stdin_bytes` (count only, never the
+  content).
+
+The SDK + CLI degrade gracefully against an older API: stdin is silently
+dropped if the server hasn't shipped this version yet — same behavior as
+before this release.
+
 ## 0.6.0 — 2026-05-06
 
 ### Added — SDK

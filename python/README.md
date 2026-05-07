@@ -31,6 +31,7 @@ trove --profile staging tail        # use it later
 # Filesystem (mirrors the SDK)
 trove run "ls workspace/"          # POST /v1/exec  (exit code propagates!)
 trove run --json "build"           # one JSON line: {exit_code,stdout,stderr,...}
+echo '{"x":1}' | trove run "jq .x" # piped stdin auto-forwards (1 MB cap)
 trove ls workspace/                # GET  /v1/files
 trove cat workspace/notes.txt      # GET  /v1/files/content
 trove put report.pdf workspace/    # PUT  /files/{path}
@@ -212,8 +213,8 @@ A minimal subscribe + verify script lives in
 
 | Method | Description |
 |--------|-------------|
-| `exec(command)` | Run a shell command. Returns stdout as a string (legacy text response). |
-| `exec_detailed(command)` | Run a shell command. Returns `ExecResult(exit_code, stdout, stderr, duration_ms)`. |
+| `exec(command, *, stdin=None)` | Run a shell command. Returns stdout as a string (legacy text response). |
+| `exec_detailed(command, *, stdin=None)` | Run a shell command. Returns `ExecResult(exit_code, stdout, stderr, duration_ms)`. |
 | `write(path, content)` | Write a UTF-8 text file. Returns `FileResult`. |
 | `upload(path, data)` | Upload bytes or a file-like object. Returns `FileResult`. |
 | `read_text(path)` | Read a UTF-8 text file (1 MB cap). Raises `TroveError` on binary content. |

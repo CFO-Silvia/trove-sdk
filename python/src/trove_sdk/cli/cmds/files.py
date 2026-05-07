@@ -76,6 +76,10 @@ def _fmt_local(iso: str) -> str:
     "--json", "json_mode", is_flag=True,
     help="Emit a single JSON line: {exit_code, stdout, stderr, duration_ms}.",
 )
+@click.option(
+    "--no-stdin", "no_stdin", is_flag=True,
+    help="Don't pipe local stdin to the remote shell (default: auto-detect).",
+)
 @click.pass_context
 @handle_errors
 def run(
@@ -83,6 +87,7 @@ def run(
     command: tuple[str, ...],
     namespace: Optional[str],
     json_mode: bool,
+    no_stdin: bool,
 ) -> None:
     """Run a shell command in the workspace and print its output.
 
@@ -92,26 +97,49 @@ def run(
         trove run wc -c workspace/notes.txt
         trove run "cat workspace/notes.txt | wc -l"
         trove run -n alice ls -la workspace/uploads/
+        echo '{"x":1}' | trove run "jq .x"          # piped stdin (1 MB cap)
 
     The exit code of the remote command is propagated as the local exit code,
     so `trove run "build" && trove run "deploy"` works the way you'd expect.
     Remote stderr goes to local stderr; `--json` keeps everything in one
-    machine-readable line for piping into `jq`.
+    machine-readable line for piping into `jq`. If stdin is a pipe (not a
+    tty) it gets forwarded to the remote shell — pass `--no-stdin` to opt out
+    in environments where `isatty` lies (some CI runners).
     """
     cmd = " ".join(command).strip()
     if not cmd:
         raise click.ClickException("empty command")
+
+    # Auto-detect piped stdin. Skip when stdout-only (interactive use) so
+    # `trove run cat` doesn't block waiting for tty input the user didn't
+    # plan to give it. 1 MB cap matches the server-side Pydantic constraint;
+    # we check here too so we can give a clean error instead of a 422.
+    stdin_payload: Optional[str] = None
+    if not no_stdin and not sys.stdin.isatty():
+        stdin_payload = sys.stdin.read()
+        if not stdin_payload:
+            stdin_payload = None
+        elif len(stdin_payload.encode("utf-8")) > 1024 * 1024:
+            raise click.ClickException(
+                "stdin > 1MB; write to a file with `trove write` and redirect"
+                " in the command (`tool < workspace/in.txt`)."
+            )
+
+    payload: dict = {"command": cmd}
+    if stdin_payload is not None:
+        payload["stdin"] = stdin_payload
+
     client, _, _, _ = get_runtime_client(ctx, namespace)
     try:
         # /v1/exec returns structured JSON so we can split stdout/stderr and
         # surface the exit code without parsing the legacy `[exit N]` prefix.
         # Bump the timeout above the API's 30 s exec cap so we don't race it.
-        r = client.post("/v1/exec", json={"command": cmd}, timeout=45.0)
+        r = client.post("/v1/exec", json=payload, timeout=45.0)
         if r.status_code == 404:
             # Older server without /v1/exec — degrade to the text endpoint.
             # Exit code can't be recovered cleanly here; we parse the leading
             # `[exit N]` line if present and otherwise leave it at 0.
-            r = client.post("/exec", json={"command": cmd}, timeout=45.0)
+            r = client.post("/exec", json=payload, timeout=45.0)
             r.raise_for_status()
             text = r.text
             exit_code = _parse_legacy_exit(text)

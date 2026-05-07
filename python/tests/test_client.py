@@ -145,6 +145,52 @@ def test_exec_detailed_propagates_408_timeout():
     assert exc.value.status_code == 408
 
 
+# ── stdin pass-through ────────────────────────────────────────────────────────
+
+@respx.mock
+def test_exec_detailed_omits_stdin_when_not_set():
+    """No stdin == no `stdin` field on the wire. Important for old servers
+    that might 422 on unknown fields if Pydantic config tightens later."""
+    import json as _j
+    route = respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200, json={"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1}
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        c.exec_detailed("true")
+    assert "stdin" not in _j.loads(route.calls[0].request.content)
+
+
+@respx.mock
+def test_exec_detailed_forwards_stdin():
+    import json as _j
+    route = respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={"exit_code": 0, "stdout": "5\n", "stderr": "", "duration_ms": 3},
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        r = c.exec_detailed("wc -c", stdin="hello")
+    body = _j.loads(route.calls[0].request.content)
+    assert body == {"command": "wc -c", "stdin": "hello"}
+    assert r.stdout == "5\n"
+
+
+@respx.mock
+def test_exec_legacy_forwards_stdin():
+    """The legacy /exec endpoint also accepts stdin once the server is upgraded."""
+    import json as _j
+    route = respx.post(f"{BASE}/exec").mock(
+        return_value=httpx.Response(200, text="ok\n")
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        c.exec("cat", stdin="payload")
+    body = _j.loads(route.calls[0].request.content)
+    assert body["stdin"] == "payload"
+
+
 # ── read_bytes (binary download) ──────────────────────────────────────────────
 
 

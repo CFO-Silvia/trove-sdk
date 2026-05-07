@@ -28,6 +28,16 @@ def main() -> None:
         print(_EXTRAS_HINT, file=sys.stderr)
         sys.exit(1)
 
+    # Force UTF-8 on stdout/stderr so commands that print ✓/⚠/… don't crash
+    # on Windows shells running cp1252. No-op on POSIX (already UTF-8) and on
+    # Python builds where reconfigure isn't available. `errors="replace"` is
+    # the safety belt for exotic terminals: garble, don't crash.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, OSError, ValueError):
+            pass
+
     root = _build_root()
     root(obj={})
 

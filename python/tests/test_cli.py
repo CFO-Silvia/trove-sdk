@@ -266,12 +266,12 @@ def test_run_command_passes_through_short_flags(monkeypatch):
 # ── trove run: exit code propagation, stderr split, --json ────────────────
 
 
-def _runner_with_fake_exec(monkeypatch, exec_response: dict):
+def _runner_with_fake_exec(monkeypatch, exec_response: dict, captured: dict | None = None):
     """Plumb a fake httpx-like client into `trove run` and return (root, runner).
 
     Most CLI behaviours we care about (exit code propagation, stderr routing,
     --json formatting) live above the network so we don't need respx; a tiny
-    in-process fake is enough.
+    in-process fake is enough. Pass `captured` to grab the POST body.
     """
     from click.testing import CliRunner
 
@@ -279,6 +279,9 @@ def _runner_with_fake_exec(monkeypatch, exec_response: dict):
 
     class FakeClient:
         def post(self, url, json=None, timeout=None, **kwargs):
+            if captured is not None:
+                captured["url"] = url
+                captured["json"] = json
             class R:
                 status_code = 200
                 text = exec_response.get("stdout", "")
@@ -371,6 +374,63 @@ def test_run_json_emits_one_line_object(monkeypatch):
     # stdout should be exactly one parseable JSON object.
     parsed = _json.loads(result.stdout.strip())
     assert parsed == {"exit_code": 1, "stdout": "a", "stderr": "b", "duration_ms": 11}
+
+
+# ── trove run: stdin auto-detect ──────────────────────────────────────────────
+
+
+def test_run_forwards_piped_stdin(monkeypatch):
+    """When stdin is a pipe (CliRunner's default with `input=...`), forward it."""
+    captured: dict = {}
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {"exit_code": 0, "stdout": "5\n", "stderr": "", "duration_ms": 1},
+        captured=captured,
+    )
+    result = runner.invoke(root, ["run", "wc", "-c"], input="hello", obj={})
+    assert result.exit_code == 0
+    assert captured["json"] == {"command": "wc -c", "stdin": "hello"}
+
+
+def test_run_omits_stdin_when_tty(monkeypatch):
+    """If sys.stdin reports it's a tty, we must not block reading from it."""
+    captured: dict = {}
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1},
+        captured=captured,
+    )
+    monkeypatch.setattr("trove_sdk.cli.cmds.files.sys.stdin.isatty", lambda: True)
+    result = runner.invoke(root, ["run", "echo", "hi"], obj={})
+    assert result.exit_code == 0
+    # No `stdin` key on the wire when it's a tty.
+    assert "stdin" not in captured["json"]
+
+
+def test_run_no_stdin_flag_skips_pipe(monkeypatch):
+    """`--no-stdin` opts out even when stdin is piped (CI escape hatch)."""
+    captured: dict = {}
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1},
+        captured=captured,
+    )
+    result = runner.invoke(root, ["run", "--no-stdin", "echo"], input="ignored", obj={})
+    assert result.exit_code == 0
+    assert "stdin" not in captured["json"]
+
+
+def test_run_rejects_oversized_stdin(monkeypatch):
+    captured: dict = {}
+    root, runner = _runner_with_fake_exec(
+        monkeypatch,
+        {"exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1},
+        captured=captured,
+    )
+    big = "x" * (1024 * 1024 + 1)
+    result = runner.invoke(root, ["run", "cat"], input=big, obj={})
+    assert result.exit_code != 0
+    assert "1MB" in result.stderr
 
 
 # ── trove get ────────────────────────────────────────────────────────────────
@@ -584,3 +644,69 @@ def test_main_prints_friendly_hint_when_click_missing(capsys, monkeypatch):
     assert exc.value.code == 1
     err = capsys.readouterr().err
     assert "pip install" in err and "trove-sdk[cli]" in err
+
+
+# ── main() forces UTF-8 stdio so windows-cp1252 shells don't crash ────────────
+
+
+def test_main_reconfigures_stdio_to_utf8(monkeypatch, capsys):
+    """`trove doctor` and friends print ✓/⚠ glyphs. On Windows under cp1252,
+    sys.stdout.write would raise UnicodeEncodeError. main() must call
+    reconfigure(encoding='utf-8') before dispatching.
+    """
+    from trove_sdk.cli import main
+
+    calls: list = []
+
+    class FakeStream:
+        encoding = "cp1252"
+
+        def reconfigure(self, *, encoding, errors):
+            calls.append((encoding, errors))
+
+        def write(self, s):
+            return len(s)
+
+        def flush(self):
+            pass
+
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr("sys.stdout", FakeStream())
+    monkeypatch.setattr("sys.stderr", FakeStream())
+
+    # Stop dispatch right after reconfigure so we don't actually run a command.
+    import trove_sdk.cli as _cli
+    monkeypatch.setattr(_cli, "_build_root", lambda: (lambda **kw: None))
+
+    main()
+    assert calls and all(enc == "utf-8" for enc, _ in calls)
+    assert all(err == "replace" for _, err in calls)
+
+
+def test_main_tolerates_streams_without_reconfigure(monkeypatch):
+    """Some embedded environments wrap stdio in objects without reconfigure.
+    main() must keep going (the user just won't get UTF-8)."""
+    from trove_sdk.cli import main
+
+    class OldStream:
+        encoding = "cp1252"
+
+        def write(self, s):
+            return len(s)
+
+        def flush(self):
+            pass
+
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr("sys.stdout", OldStream())
+    monkeypatch.setattr("sys.stderr", OldStream())
+
+    import trove_sdk.cli as _cli
+    monkeypatch.setattr(_cli, "_build_root", lambda: (lambda **kw: None))
+
+    # Should not raise.
+    main()
