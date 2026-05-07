@@ -7,13 +7,30 @@ testable without going through click. This module is the user-facing veneer.
 from __future__ import annotations
 
 import json as _json
+import sys as _sys
 from typing import Optional
 
 import click
 
 from ...mcp import install as mcp_install
+from ...mcp import upgrade as mcp_upgrade
 from .. import config
 from ..base import handle_errors
+
+
+# How users restart MCP clients differs per OS — Claude Desktop on macOS
+# uses Cmd-Q; on Windows the window-close button leaves a tray process
+# alive that keeps the old MCP subprocess running. Most "I upgraded but
+# it didn't take" reports are this.
+def _restart_hint() -> str:
+    if _sys.platform == "darwin":
+        return "fully quit the client (Cmd-Q) and reopen — closing the window isn't enough"
+    if _sys.platform == "win32":
+        return (
+            "fully quit the client (right-click tray icon → Exit) and reopen — "
+            "closing the window isn't enough"
+        )
+    return "fully quit the client and reopen — closing the window isn't enough"
 
 
 def _ensure_mcp_extra() -> None:
@@ -126,8 +143,9 @@ def install(
         f"profile={name}  namespace={ns}  workspace={profile.workspace_id}",
         fg="bright_black",
     )
+    click.secho(f"⚠ {_restart_hint()}.", fg="yellow")
     click.secho(
-        "restart the client(s) above to load the new server.",
+        "to update Trove later, run `trove mcp upgrade`.",
         fg="bright_black",
     )
 
@@ -190,13 +208,38 @@ def uninstall(clients: tuple[str, ...], server_name: str) -> None:
     help="Server name to look up (mcpServers.<name>).",
 )
 @click.option("--json", "json_mode", is_flag=True, help="Emit raw JSON.")
+@click.option(
+    "--check-updates/--no-check-updates",
+    default=True,
+    show_default=True,
+    help="Query PyPI for the latest version and flag stale installs.",
+)
 @handle_errors
-def status(server_name: str, json_mode: bool) -> None:
-    """Show which MCP clients have the Trove server configured."""
+def status(server_name: str, json_mode: bool, check_updates: bool) -> None:
+    """Show which MCP clients have the Trove server configured.
+
+    By default also checks each configured client's installed trove-sdk
+    version against the latest on PyPI and flags stale installs with a
+    one-line ``trove mcp upgrade`` hint. Pass ``--no-check-updates`` to
+    skip the PyPI lookup if you're offline or in a hurry.
+    """
+    latest = mcp_upgrade.latest_pypi_version() if check_updates else None
+
     rows: list[dict] = []
+    any_stale = False
     for key, spec in mcp_install.CLIENTS.items():
         path = spec.config_path()
         entry = mcp_install.status_for_client(key, server_name=server_name)
+        cmd_path = (entry or {}).get("command")
+        installed: Optional[str] = None
+        env_kind: Optional[str] = None
+        if entry and check_updates and cmd_path:
+            from pathlib import Path as _P
+            installed = mcp_upgrade.installed_version_for_python(_P(cmd_path))
+            env_kind = mcp_upgrade.detect_env_kind(_P(cmd_path)).key
+        is_stale = bool(latest and installed and installed != latest)
+        if is_stale:
+            any_stale = True
         rows.append(
             {
                 "client": key,
@@ -205,6 +248,11 @@ def status(server_name: str, json_mode: bool) -> None:
                 "config_exists": path.exists(),
                 "configured": entry is not None,
                 "namespace": (entry or {}).get("env", {}).get("TROVE_NAMESPACE"),
+                "command": cmd_path,
+                "installed_version": installed,
+                "latest_version": latest,
+                "env_kind": env_kind,
+                "stale": is_stale,
             }
         )
 
@@ -215,9 +263,18 @@ def status(server_name: str, json_mode: bool) -> None:
     for r in rows:
         if r["configured"]:
             ns = r["namespace"] or "?"
+            ver_tag = ""
+            if r["installed_version"]:
+                if r["stale"]:
+                    ver_tag = f"  trove-sdk {r['installed_version']} (latest {r['latest_version']} — run `trove mcp upgrade`)"
+                else:
+                    ver_tag = f"  trove-sdk {r['installed_version']}"
+            elif check_updates and r["command"]:
+                ver_tag = "  (could not read trove-sdk version)"
             click.secho(
-                f"✓ {r['label']:<24}  namespace={ns}  ({r['path']})", fg="green"
+                f"✓ {r['label']:<24}  namespace={ns}{ver_tag}", fg="green"
             )
+            click.secho(f"    {r['path']}", fg="bright_black")
         elif r["config_exists"]:
             click.secho(
                 f"- {r['label']:<24}  not configured  ({r['path']})",
@@ -227,3 +284,120 @@ def status(server_name: str, json_mode: bool) -> None:
             click.secho(
                 f"  {r['label']:<24}  client not detected", fg="bright_black"
             )
+
+    if any_stale:
+        click.echo()
+        click.secho(
+            "→ run `trove mcp upgrade` to update, then "
+            f"{_restart_hint()}.",
+            fg="yellow",
+        )
+
+
+# ── upgrade ───────────────────────────────────────────────────────────────────
+
+
+@mcp.command("upgrade")
+@click.option(
+    "--name",
+    "server_name",
+    default="trove",
+    show_default=True,
+    help="Server name to look up (mcpServers.<name>).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print what would be done without running anything.",
+)
+@click.option("--json", "json_mode", is_flag=True, help="Emit raw JSON.")
+@handle_errors
+def upgrade(server_name: str, dry_run: bool, json_mode: bool) -> None:
+    """Update the trove-sdk Python that each configured MCP client launches.
+
+    \b
+    Why this exists:
+      `trove mcp install` writes the absolute path of the Python that ran
+      it into the client config — typically a uv-tool or pipx env, not
+      your shell's default. A plain `pip install --upgrade` from your
+      shell would update the wrong env and the client would keep using
+      the old version. This command finds the right env per client and
+      runs the upgrade command for that env type (uv tool / pipx / pip).
+
+    \b
+    Examples:
+      trove mcp upgrade               # upgrade every configured client
+      trove mcp upgrade --dry-run     # show what would run, don't run it
+    """
+    installs = mcp_upgrade.discover_installs(server_name=server_name)
+    if not installs:
+        raise click.ClickException(
+            "no clients have a Trove server configured. Run `trove mcp install` first."
+        )
+
+    # Some clients share the same Python (e.g. user installed once via
+    # uv-tool and wired both Claude Desktop and Cursor to it). Upgrading
+    # twice is wasteful and confusing — dedupe by python_path.
+    seen: set[str] = set()
+    unique: list[mcp_upgrade.ClientInstall] = []
+    shared_with: dict[str, list[str]] = {}
+    for ins in installs:
+        key = str(ins.python_path) if ins.python_path else f"<no-path:{ins.client_key}>"
+        if key in seen:
+            shared_with.setdefault(key, []).append(ins.label)
+            continue
+        seen.add(key)
+        shared_with.setdefault(key, []).append(ins.label)
+        unique.append(ins)
+
+    results: list[mcp_upgrade.UpgradeResult] = []
+    for ins in unique:
+        click.secho(
+            f"→ {ins.label} ({ins.env_kind.label}): "
+            f"trove-sdk {ins.installed_version or '?'} at {ins.python_path}",
+            fg="bright_black",
+        )
+        r = mcp_upgrade.upgrade_install(ins, dry_run=dry_run)
+        results.append(r)
+        fg = "green" if r.succeeded else "red"
+        marker = "✓" if r.succeeded else "×"
+        click.secho(f"  {marker} {r.message}", fg=fg)
+        # If multiple clients share this Python, the upgrade applies to all of them.
+        # Show this for both dry-run and real runs — users want to know coverage.
+        key = str(ins.python_path) if ins.python_path else f"<no-path:{ins.client_key}>"
+        peers = [lbl for lbl in shared_with[key] if lbl != ins.label]
+        if peers and r.succeeded:
+            click.secho(
+                f"    (also applies to: {', '.join(peers)} — same Python)",
+                fg="bright_black",
+            )
+
+    if json_mode:
+        payload = {
+            "results": [
+                {
+                    "client": r.install.client_key,
+                    "label": r.install.label,
+                    "python": str(r.install.python_path) if r.install.python_path else None,
+                    "env_kind": r.install.env_kind.key,
+                    "ran": r.ran,
+                    "succeeded": r.succeeded,
+                    "previous_version": r.install.installed_version,
+                    "new_version": r.new_version,
+                    "message": r.message,
+                }
+                for r in results
+            ],
+            "dry_run": dry_run,
+        }
+        click.echo(_json.dumps(payload, indent=2))
+
+    any_succeeded = any(r.succeeded for r in results) and not dry_run
+    any_failed = any(not r.succeeded for r in results)
+    if any_succeeded:
+        click.echo()
+        click.secho(f"⚠ {_restart_hint()}.", fg="yellow")
+    if any_failed:
+        # Non-zero exit when any upgrade actually failed (not dry-run skips)
+        # so CI / scripts can branch.
+        raise click.ClickException("one or more upgrades failed; see messages above")

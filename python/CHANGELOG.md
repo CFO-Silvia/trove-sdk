@@ -2,6 +2,56 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.9.2 — 2026-05-07
+
+### Added — `trove mcp upgrade` (one-command updates that actually work)
+
+Before: `trove mcp install` baked the absolute path of `sys.executable`
+into each client's config — typically a `uv tool` or `pipx` env. Users
+ran `pip install --upgrade` from their shell, hit a different Python,
+and Claude Desktop kept loading the old version. Worked, didn't feel
+like working.
+
+```bash
+trove mcp upgrade            # detect each client's Python, run the right recipe
+trove mcp upgrade --dry-run  # show the commands, don't run them
+```
+
+- **Per-env detection.** Path-pattern matching identifies `uv tool` /
+  `pipx` / pip-managed envs and picks the matching recipe (`uv tool
+  upgrade`, `pipx upgrade`, `<that-python> -m pip install --upgrade
+  'trove-sdk[mcp]'`).
+- **Dedup.** Two clients (Claude Desktop + Cursor) often point at the
+  same `uv tool` Python. The command dedupes by interpreter path and
+  prints peer coverage so the user sees both clients getting the
+  update from one upgrade run.
+- **Failure-tolerant.** A missing `uv` on PATH, a 5xx from PyPI, or a
+  busted Python path each surface as a single human-readable line
+  with the manual recipe to run instead — never a stack trace.
+
+### Changed — `trove mcp status` flags stale installs
+
+Each configured client now reports its installed `trove-sdk` version and
+flags ones that lag behind PyPI:
+
+```
+✓ Claude Desktop          namespace=alice  trove-sdk 0.7.5 (latest 0.9.2 — run `trove mcp upgrade`)
+✓ Cursor                  namespace=alice  trove-sdk 0.9.2
+
+→ run `trove mcp upgrade` to update, then fully quit the client (Cmd-Q) and reopen.
+```
+
+PyPI is queried once per command (cached in-process) so detecting stale
+clients across N installs costs one HTTP call. Pass
+`--no-check-updates` to skip the network entirely.
+
+### Changed — `trove mcp install` reminds about the full-quit step
+
+Half the "I upgraded but it didn't take" reports are people who closed
+the window instead of fully quitting (the tray process keeps the old
+MCP subprocess alive). Install output now ends with a per-OS reminder
+plus a hint that `trove mcp upgrade` exists for next time.
+
 ## 0.9.1 — 2026-05-07
 
 ### Added — `bootstrap()` reaches Claude Desktop / Cursor / Claude Code via MCP

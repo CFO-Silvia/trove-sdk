@@ -46,10 +46,30 @@ The server also exposes a **`trove_orient` MCP prompt** (slash-command in
 Claude Desktop's prompt picker) so a human can manually re-seed a
 conversation with the workspace state mid-session.
 
-`trove mcp status` shows which clients are wired up; `trove mcp uninstall`
-removes the entry. The MCP server reads `TROVE_API_KEY` / `TROVE_NAMESPACE`
-from the env block written into the client's config — point at a different
-namespace by re-running `install` with `-n <ns>`.
+`trove mcp status` shows which clients are wired up (with installed
+trove-sdk version + a hint when an upgrade is available); `trove mcp
+uninstall` removes the entry. The MCP server reads `TROVE_API_KEY` /
+`TROVE_NAMESPACE` from the env block written into the client's config —
+point at a different namespace by re-running `install` with `-n <ns>`.
+
+### Updating
+
+`trove mcp install` writes the absolute path of the Python that ran it
+into each client's config — typically a `uv tool` or `pipx` env, not your
+shell's default. A plain `pip install --upgrade` from your shell would
+update the wrong env. Use this instead:
+
+```bash
+trove mcp upgrade        # detects each client's Python and upgrades it
+trove mcp upgrade --dry-run    # show what would run, don't run it
+```
+
+The command picks the right recipe per env (`uv tool upgrade`,
+`pipx upgrade`, or `<that-python> -m pip install --upgrade 'trove-sdk[mcp]'`),
+dedupes clients that share the same Python, and prints a restart reminder
+because Claude Desktop only re-launches the MCP subprocess on a full quit
+(closing the window leaves the tray process — and the old subprocess —
+running).
 
 ## Multi-tenant agent isolation (three-key pattern)
 
