@@ -2,6 +2,57 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.9.0 — 2026-05-07
+
+### Added — `bootstrap()` for cross-session agent orientation
+
+Each new agent session starts with amnesia. One call now fixes that:
+
+```python
+bs = client.bootstrap()
+system_prompt += bs.as_system_prompt_block()
+# <workspace>
+#   namespace: alice
+#   files: 12; last edited 2026-05-07T20:00:00Z
+#   recent: workspace/data.csv (3.4KB), workspace/report.md (140B), ...
+#   init.sh: cd workspace/data; source .venv/bin/activate
+#   last_session: |
+#     Investigated Q3 numbers; blocked on Salesforce auth.
+# </workspace>
+```
+
+`bootstrap()` composes existing endpoints — recursive `list_dir` + reads of
+`init.sh` and `agent.md` — into a single `WorkspaceBootstrap` packet. Async
+fans the constituent reads out concurrently so the round-trip cost stays
+bounded by the slowest one. No new server contract; works against any
+server version.
+
+`.trove/` files are excluded from the recent-files surface so SDK metadata
+doesn't crowd out the agent's actual work.
+
+### Added — `workspace/.trove/agent.md` convention
+
+Cross-session handoff slot. To leave a note for the next instance of an
+agent, write to this path with the normal `client.write(...)`:
+
+```python
+client.write("workspace/.trove/agent.md",
+             "## What I learned\n- ...\n- ...\n")
+```
+
+`bootstrap()` surfaces the file as `bs.agent_memory` and renders it inside
+the system-prompt block as `last_session: |`. The runtime doesn't parse
+the file — pick whatever format works for the receiving agent.
+
+No dedicated `set_agent_memory` / `get_agent_memory` methods: it's just a
+file at a known path. `client.write` and `client.read_text` are the API.
+
+### Added — `examples/bootstrap.py`
+
+Cold-start vs. warm-start demo: same script, two invocations against the
+same namespace. The second invocation sees the first's handoff note via
+`bootstrap()` and skips work the previous session already did.
+
 ## 0.8.0 — 2026-05-07
 
 ### Fixed — `exec_chain` now actually persists `cwd`/`export`/vars

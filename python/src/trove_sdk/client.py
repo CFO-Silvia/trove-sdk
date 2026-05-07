@@ -13,6 +13,7 @@ from .models import (
     FileResult,
     ListResult,
     Snapshot,
+    WorkspaceBootstrap,
 )
 
 _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
@@ -21,6 +22,14 @@ _DEFAULT_BASE_URL = "https://api.trovefiles.dev"
 # context (cwd, env, venv activation) lives here so it survives across agent
 # process restarts — see set_init/get_init/clear_init.
 _INIT_PATH = "workspace/.trove/init.sh"
+
+# Free-form cross-session note an agent leaves for the next instance of itself.
+# Read by `get_agent_memory` / surfaced in `bootstrap()`. The runtime doesn't
+# parse it — agents pick whatever format works.
+_AGENT_MEMORY_PATH = "workspace/.trove/agent.md"
+
+# How many recent files to surface in `bootstrap()`.
+_BOOTSTRAP_RECENT_COUNT = 10
 
 
 def _norm_path(path: str) -> str:
@@ -120,6 +129,7 @@ class TroveClient:
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = 60.0,
     ) -> None:
+        self._namespace = namespace
         self._http = httpx.Client(
             base_url=base_url,
             headers={
@@ -250,6 +260,47 @@ class TroveClient:
                 return False
             raise
 
+    def bootstrap(self) -> WorkspaceBootstrap:
+        """One-call orientation packet for an agent picking up the namespace.
+
+        Returns a :class:`WorkspaceBootstrap` rolling up:
+
+        - file count + most-recently-modified files (top 10 by ``modified_at``,
+          ``.trove/`` excluded so its metadata files don't crowd out real work)
+        - the active ``init.sh`` text, if any
+        - the ``agent.md`` handoff note from the previous session, if any
+
+        Composed from existing endpoints — no new server contract — so the
+        same call works against any server version. Costs a small handful
+        of HTTP round-trips; meant to be called once per session, not in
+        a loop. Pipe :meth:`WorkspaceBootstrap.as_system_prompt_block` into
+        the model's system message so it orients before its first tool call.
+
+        **Convention**: ``workspace/.trove/agent.md`` is the cross-session
+        handoff slot. To leave a note for the next instance, the agent writes
+        it with the normal :meth:`write` (free-form markdown — the runtime
+        doesn't parse it). ``bootstrap`` surfaces it as ``agent_memory``.
+        """
+        listing = self.list_dir("workspace/", recursive=True)
+        files = [f for f in listing if not f.is_dir and not f.path.startswith("workspace/.trove/")]
+        files.sort(key=lambda f: f.modified_at, reverse=True)
+        recent = files[:_BOOTSTRAP_RECENT_COUNT]
+        try:
+            agent_memory: str | None = self.read_text(_AGENT_MEMORY_PATH)
+        except TroveError as e:
+            if e.status_code != 404:
+                raise
+            agent_memory = None
+        return WorkspaceBootstrap(
+            namespace=self._namespace,
+            file_count=len(files),
+            last_modified_at=files[0].modified_at if files else None,
+            recent_files=recent,
+            init_script=self.get_init(),
+            agent_memory=agent_memory,
+            truncated=listing.truncated,
+        )
+
     def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> ListResult:
         """List a directory in the workspace. Directories first, then files, alphabetical.
 
@@ -365,6 +416,7 @@ class AsyncTroveClient:
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = 60.0,
     ) -> None:
+        self._namespace = namespace
         self._http = httpx.AsyncClient(
             base_url=base_url,
             headers={
@@ -446,6 +498,42 @@ class AsyncTroveClient:
             if e.status_code == 404:
                 return False
             raise
+
+    async def bootstrap(self) -> WorkspaceBootstrap:
+        """One-call orientation packet. See :meth:`TroveClient.bootstrap`.
+
+        Fans the three constituent reads (recursive listing, init.sh,
+        agent.md) out as concurrent tasks so the round-trip cost stays
+        bounded by the slowest one — meaningful for the very first agent
+        call where the user is watching.
+        """
+        import asyncio
+
+        async def _read_agent_memory() -> str | None:
+            try:
+                return await self.read_text(_AGENT_MEMORY_PATH)
+            except TroveError as e:
+                if e.status_code == 404:
+                    return None
+                raise
+
+        listing, init_script, agent_memory = await asyncio.gather(
+            self.list_dir("workspace/", recursive=True),
+            self.get_init(),
+            _read_agent_memory(),
+        )
+        files = [f for f in listing if not f.is_dir and not f.path.startswith("workspace/.trove/")]
+        files.sort(key=lambda f: f.modified_at, reverse=True)
+        recent = files[:_BOOTSTRAP_RECENT_COUNT]
+        return WorkspaceBootstrap(
+            namespace=self._namespace,
+            file_count=len(files),
+            last_modified_at=files[0].modified_at if files else None,
+            recent_files=recent,
+            init_script=init_script,
+            agent_memory=agent_memory,
+            truncated=listing.truncated,
+        )
 
     async def list_dir(self, path: str = "workspace/", *, recursive: bool = False) -> ListResult:
         params: dict = {"path": path}

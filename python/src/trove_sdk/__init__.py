@@ -23,6 +23,7 @@ from .models import (
     WebhookEvent,
     WebhookMetadata,
     WebhookTestResult,
+    WorkspaceBootstrap,
 )
 from .webhooks import WebhookSignatureError, verify_webhook
 
@@ -51,6 +52,7 @@ __all__ = [
     "WebhookEvent",
     "WebhookMetadata",
     "WebhookTestResult",
+    "WorkspaceBootstrap",
     "WebhookSignatureError",
     "verify_webhook",
 ]

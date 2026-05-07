@@ -467,6 +467,195 @@ def test_clear_init_returns_false_when_absent():
         assert c.clear_init() is False
 
 
+# ── bootstrap (one-call orientation packet) ───────────────────────────────────
+
+
+def _make_listing(*entries: dict, truncated: bool = False) -> dict:
+    return {"entries": list(entries), "truncated": truncated}
+
+
+def _file(path: str, modified_at: str, size: int = 10) -> dict:
+    return {
+        "name": path.rsplit("/", 1)[-1],
+        "path": path,
+        "is_dir": False,
+        "size_bytes": size,
+        "modified_at": modified_at,
+    }
+
+
+@respx.mock
+def test_bootstrap_rolls_up_recent_files_init_and_agent_memory():
+    """Bootstrap is the killer first-call: one method, three composed reads."""
+    from trove_sdk import WorkspaceBootstrap
+
+    respx.get(f"{BASE}/v1/files").mock(
+        return_value=httpx.Response(
+            200,
+            json=_make_listing(
+                _file("workspace/data.csv", "2026-05-07T20:00:00Z", size=512),
+                _file("workspace/report.md", "2026-05-07T19:00:00Z", size=140),
+                _file("workspace/.trove/init.sh", "2026-05-07T18:00:00Z", size=20),
+                _file("workspace/.trove/agent.md", "2026-05-07T17:00:00Z", size=80),
+            ),
+        )
+    )
+    # Two reads (init.sh, then agent.md) hit /v1/files/content; respx routes by query.
+    def content_handler(request):
+        path = request.url.params.get("path")
+        if path == "workspace/.trove/init.sh":
+            return httpx.Response(
+                200,
+                json={
+                    "path": path, "size_bytes": 20, "modified_at": "2026-05-07T18:00:00Z",
+                    "encoding": "utf-8", "content": "cd workspace/data\n",
+                },
+            )
+        if path == "workspace/.trove/agent.md":
+            return httpx.Response(
+                200,
+                json={
+                    "path": path, "size_bytes": 80, "modified_at": "2026-05-07T17:00:00Z",
+                    "encoding": "utf-8",
+                    "content": "Investigated Q3 numbers; blocked on Salesforce auth.",
+                },
+            )
+        return httpx.Response(404, json={"detail": f"not found: {path}"})
+
+    respx.get(f"{BASE}/v1/files/content").mock(side_effect=content_handler)
+
+    with TroveClient("trove-sk-test", "ns-alice", base_url=BASE) as c:
+        bs = c.bootstrap()
+
+    assert isinstance(bs, WorkspaceBootstrap)
+    assert bs.namespace == "ns-alice"
+    # `.trove/` files are excluded from the recent-files surface so they don't
+    # crowd out real work.
+    assert bs.file_count == 2
+    assert [f.path for f in bs.recent_files] == ["workspace/data.csv", "workspace/report.md"]
+    assert bs.last_modified_at == "2026-05-07T20:00:00Z"
+    assert bs.init_script == "cd workspace/data\n"
+    assert bs.agent_memory == "Investigated Q3 numbers; blocked on Salesforce auth."
+    assert bs.truncated is False
+
+
+@respx.mock
+def test_bootstrap_handles_empty_namespace():
+    """Empty namespace = empty packet, no exceptions."""
+    respx.get(f"{BASE}/v1/files").mock(
+        return_value=httpx.Response(200, json=_make_listing())
+    )
+    respx.get(f"{BASE}/v1/files/content").mock(
+        return_value=httpx.Response(404, json={"detail": "not found"})
+    )
+
+    with TroveClient("trove-sk-test", "ns-fresh", base_url=BASE) as c:
+        bs = c.bootstrap()
+
+    assert bs.file_count == 0
+    assert bs.recent_files == []
+    assert bs.last_modified_at is None
+    assert bs.init_script is None
+    assert bs.agent_memory is None
+
+
+@respx.mock
+def test_bootstrap_caps_recent_files_at_ten():
+    """Recent files surface should stop at 10 entries even with hundreds present."""
+    files = [
+        _file(f"workspace/f{i:03d}.txt", f"2026-05-07T{20 - (i % 20):02d}:00:00Z")
+        for i in range(50)
+    ]
+    respx.get(f"{BASE}/v1/files").mock(
+        return_value=httpx.Response(200, json=_make_listing(*files, truncated=True))
+    )
+    respx.get(f"{BASE}/v1/files/content").mock(
+        return_value=httpx.Response(404, json={"detail": "not found"})
+    )
+
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        bs = c.bootstrap()
+
+    assert bs.file_count == 50
+    assert len(bs.recent_files) == 10
+    assert bs.truncated is True
+    # Sorted newest-first so the most relevant files surface to the model.
+    times = [f.modified_at for f in bs.recent_files]
+    assert times == sorted(times, reverse=True)
+
+
+def test_workspace_bootstrap_renders_system_prompt_block():
+    """The renderer is what devs actually pipe into the model — verify shape."""
+    from trove_sdk import WorkspaceBootstrap
+    from trove_sdk.models import FileInfo
+
+    bs = WorkspaceBootstrap(
+        namespace="alice",
+        file_count=3,
+        last_modified_at="2026-05-07T20:00:00Z",
+        recent_files=[
+            FileInfo("data.csv", "workspace/data.csv", False, 512, "2026-05-07T20:00:00Z"),
+            FileInfo("report.md", "workspace/report.md", False, 140, "2026-05-07T19:00:00Z"),
+        ],
+        init_script="cd workspace/data\nsource .venv/bin/activate\n",
+        agent_memory="Tried approach A — ruled out due to rate limits.\nLeaving with cache primed.",
+        truncated=False,
+    )
+    block = bs.as_system_prompt_block()
+    assert block.startswith("<workspace>")
+    assert block.endswith("</workspace>")
+    assert "namespace: alice" in block
+    assert "files: 3" in block
+    assert "workspace/data.csv (512B)" in block
+    # init.sh should be rendered inline (newlines collapsed) so it stays a one-liner.
+    assert "init.sh: cd workspace/data; source .venv/bin/activate" in block
+    # agent_memory is multi-line so it gets a YAML-block-scalar treatment.
+    assert "last_session: |" in block
+    assert "    Tried approach A" in block
+
+
+def test_workspace_bootstrap_renders_empty_namespace_cleanly():
+    from trove_sdk import WorkspaceBootstrap
+    bs = WorkspaceBootstrap(
+        namespace="fresh", file_count=0, last_modified_at=None,
+        recent_files=[], init_script=None, agent_memory=None, truncated=False,
+    )
+    block = bs.as_system_prompt_block()
+    assert "files: 0 (empty)" in block
+    assert "init.sh" not in block
+    assert "last_session" not in block
+
+
+@respx.mock
+async def test_async_bootstrap_fans_out_concurrently():
+    """Async bootstrap should fire the listing + two reads in parallel."""
+    respx.get(f"{BASE}/v1/files").mock(
+        return_value=httpx.Response(
+            200,
+            json=_make_listing(
+                _file("workspace/x.txt", "2026-05-07T20:00:00Z"),
+            ),
+        )
+    )
+    def content_handler(request):
+        path = request.url.params.get("path")
+        if path == "workspace/.trove/init.sh":
+            return httpx.Response(
+                200,
+                json={"path": path, "size_bytes": 5, "modified_at": "t",
+                      "encoding": "utf-8", "content": "cd .\n"},
+            )
+        return httpx.Response(404, json={"detail": "missing"})
+    respx.get(f"{BASE}/v1/files/content").mock(side_effect=content_handler)
+
+    async with AsyncTroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        bs = await c.bootstrap()
+
+    assert bs.file_count == 1
+    assert bs.init_script == "cd .\n"
+    assert bs.agent_memory is None
+
+
 # ── error subclasses ─────────────────────────────────────────────────────────
 
 

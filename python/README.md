@@ -289,12 +289,56 @@ fresh shell; only the prelude carries over, not state from prior commands.
 Errors in the prelude write to stderr but don't block the user command — but
 **don't put `exit` in the script**: it kills the shell before your command runs.
 
-> **`workspace/.trove/` is reserved.** Write only via `set_init` /
-> `get_init` / `clear_init`; direct `write()` calls into that directory may
-> be intercepted or rejected by future server versions.
+> **`workspace/.trove/` is reserved** for SDK conventions: `init.sh` (the
+> sourced prelude) and `agent.md` (the cross-session handoff note — see
+> below). Other files in that directory may be intercepted or rejected by
+> future server versions.
 
 Async clients have the same three methods: `await client.set_init(...)`,
 `await client.get_init()`, `await client.clear_init()`.
+
+### Cross-session orientation (`bootstrap()`)
+
+Each new agent session starts with amnesia: no idea what files are around,
+what the previous instance was working on, or where it got stuck. One call
+fixes that:
+
+```python
+bs = client.bootstrap()
+print(bs.as_system_prompt_block())
+# <workspace>
+#   namespace: alice
+#   files: 12; last edited 2026-05-07T20:00:00Z
+#   recent: workspace/data.csv (3.4KB), workspace/report.md (140B), ...
+#   init.sh: cd workspace/data; source .venv/bin/activate
+#   last_session: |
+#     Investigated Q3 numbers; blocked on Salesforce auth.
+#     Cache primed at workspace/.cache/q3.
+# </workspace>
+```
+
+Pipe that block into your model's system prompt before the first tool call.
+The agent orients without burning a turn on `ls` + `cat`.
+
+`bootstrap()` composes existing endpoints (`list_dir` + two `read_text`s) —
+it works against any server version, async fans them out concurrently. Call
+it once per session.
+
+**Convention**: `workspace/.trove/agent.md` is the cross-session handoff
+slot. To leave a note for the next instance of yourself, write it with the
+normal `client.write(...)`:
+
+```python
+client.write("workspace/.trove/agent.md", (
+    "## What I learned\n"
+    "- Salesforce OAuth needs the `api` scope, not `read`\n"
+    "- Cached results in workspace/.cache/q3.json — reuse don't recompute\n"
+))
+```
+
+The runtime doesn't parse the file; pick whatever format works for you and
+the next instance. `bootstrap()` will surface it as `bs.agent_memory` and
+in the rendered prompt block.
 
 ### Async
 
@@ -401,6 +445,7 @@ A minimal subscribe + verify script lives in
 | `set_init(text)` | Write `workspace/.trove/init.sh` — sourced before every `/exec` call. Returns `FileResult`. |
 | `get_init()` | Read the init script. Returns the text, or `None` if unset. |
 | `clear_init()` | Delete the init script. Returns `True` if it existed, `False` otherwise. |
+| `bootstrap()` | One-call orientation packet: recent files + `init.sh` + the previous session's `agent.md` handoff note. Returns `WorkspaceBootstrap` with an `as_system_prompt_block()` renderer for direct system-prompt injection. |
 | `create_snapshot(label?)` | Tar the namespace and store it. Returns `Snapshot`. |
 | `list_snapshots()` | List snapshots newest-first. Returns `list[Snapshot]`. |
 | `restore_snapshot(id)` | Wipe the namespace and restore. Returns # files restored. |

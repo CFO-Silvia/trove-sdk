@@ -133,3 +133,62 @@ class Snapshot:
     label: str | None
     size_bytes: int
     created_at: str
+
+
+@dataclass
+class WorkspaceBootstrap:
+    """One-call orientation packet for an agent picking up a namespace.
+
+    Composed from existing endpoints (``list_dir`` + reads of two well-known
+    files), so it works against any Trove server. Intended for the very first
+    tool call of a session: instead of probing with ``ls`` + ``cat`` + ``cat``
+    the agent gets file listing, init.sh content, and the cross-session
+    handoff note in one go.
+
+    See :meth:`TroveClient.bootstrap` for the call, and ``set_agent_memory`` /
+    ``get_agent_memory`` / ``append_agent_memory`` for writing the handoff
+    note that the next instance will read.
+    """
+    namespace: str
+    file_count: int
+    last_modified_at: str | None
+    recent_files: list["FileInfo"]
+    init_script: str | None
+    agent_memory: str | None
+    truncated: bool
+
+    def as_system_prompt_block(self) -> str:
+        """Render as an XML-tagged block suitable for system-prompt injection.
+
+        The shape stays stable so devs can pipe this straight into a system
+        message without per-version formatting churn. Empty fields are
+        omitted rather than rendered as ``None``.
+        """
+        lines: list[str] = ["<workspace>"]
+        lines.append(f"  namespace: {self.namespace}")
+        if self.file_count == 0:
+            lines.append("  files: 0 (empty)")
+        else:
+            tail = (
+                f"; last edited {self.last_modified_at}"
+                if self.last_modified_at
+                else ""
+            )
+            trunc = " (more, truncated)" if self.truncated else ""
+            lines.append(f"  files: {self.file_count}{tail}{trunc}")
+            if self.recent_files:
+                names = ", ".join(
+                    f"{f.path}" + (f" ({f.size_bytes}B)" if f.size_bytes is not None else "")
+                    for f in self.recent_files
+                )
+                lines.append(f"  recent: {names}")
+        if self.init_script:
+            stripped = self.init_script.strip()
+            inline = stripped.replace("\n", "; ")
+            lines.append(f"  init.sh: {inline}")
+        if self.agent_memory:
+            lines.append("  last_session: |")
+            for ln in self.agent_memory.rstrip().splitlines() or [""]:
+                lines.append(f"    {ln}")
+        lines.append("</workspace>")
+        return "\n".join(lines)
