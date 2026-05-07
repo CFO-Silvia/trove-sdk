@@ -12,6 +12,7 @@ from typing import Optional
 
 import click
 
+from .. import config as _cfg
 from ..base import get_client, handle_errors
 from ..duration import parse_since
 from ..fmt import print_event
@@ -75,10 +76,13 @@ def tail(
     last_event = time.monotonic()
     idle_shown = False
 
+    # Resolve namespace: --namespace flag > $TROVE_NAMESPACE > profile.namespace
+    ns_effective = _cfg.resolve_namespace(profile, namespace)
+
     if not json_mode:
         click.secho(
             f"tailing {profile.workspace_id}"
-            + (f" namespace={namespace}" if namespace else "")
+            + (f" namespace={ns_effective}" if ns_effective else "")
             + (f" types={types}" if types else "")
             + "  (Ctrl-C to stop)",
             fg="blue",
@@ -86,8 +90,8 @@ def tail(
         )
 
     params_base: dict[str, str | int] = {"limit": 200}
-    if namespace:
-        params_base["namespace"] = namespace
+    if ns_effective:
+        params_base["namespace"] = ns_effective
     if types:
         params_base["types"] = types
 
@@ -160,8 +164,9 @@ def list_cmd(
     """Show recent events (newest first). Use --cursor for pagination."""
     client, profile, _ = get_client(ctx)
     params: dict[str, str | int] = {"limit": limit}
-    if namespace:
-        params["namespace"] = namespace
+    ns_effective = _cfg.resolve_namespace(profile, namespace)
+    if ns_effective:
+        params["namespace"] = ns_effective
     if types:
         params["types"] = types
     if since:
