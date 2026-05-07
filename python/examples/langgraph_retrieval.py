@@ -71,7 +71,13 @@ def bash(command: str) -> str:
       cat workspace/notes/q1-revenue.md
       grep -r 'revenue' workspace/
     """
-    return trove.exec(command)
+    # exec_detailed so a non-zero shell exit comes back as text the model
+    # can read and react to, rather than raising TroveExecError up through
+    # the framework's tool wrapper and crashing the graph.
+    r = trove.exec_detailed(command)
+    if r.exit_code == 0:
+        return r.stdout
+    return f"[exit {r.exit_code}]\n{r.stderr}".rstrip()
 
 
 # ── Graph ─────────────────────────────────────────────────────────────────────

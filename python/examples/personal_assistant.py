@@ -152,17 +152,21 @@ def chat(messages: list[dict]) -> tuple[str, list[dict]]:
 
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         messages.append({"role": "assistant", "content": response.content})
-        messages.append({
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": trove.exec(tu.input["command"]),
-                }
-                for tu in tool_uses
-            ],
-        })
+        # exec_detailed gives us exit_code/stdout/stderr separately so a
+        # failing command flows back to the model as is_error=True instead
+        # of raising TroveExecError and crashing the loop.
+        tool_results = []
+        for tu in tool_uses:
+            r = trove.exec_detailed(tu.input["command"])
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tu.id,
+                "content": r.stdout if r.exit_code == 0 else (
+                    f"[exit {r.exit_code}]\n{r.stderr}".rstrip()
+                ),
+                "is_error": r.exit_code != 0,
+            })
+        messages.append({"role": "user", "content": tool_results})
 
 
 # ── 5. Tie it together ────────────────────────────────────────────────────────

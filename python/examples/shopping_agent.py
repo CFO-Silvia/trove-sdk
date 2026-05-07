@@ -27,7 +27,9 @@ SDK SURFACE USED
 ────────────────
     TroveClient(api_key, namespace)         # construct
     client.write(path, content)             # seed catalog
-    client.exec(command)                    # agent's tool: run shell
+    client.exec_detailed(command)           # agent's tool: run shell, branch
+                                            # on exit_code so failures flow
+                                            # back to the model as is_error
     client.create_snapshot(label=...)       # checkpoint before agent runs
     client.list_snapshots()                 # show what was created
 """
@@ -100,9 +102,20 @@ BASH_TOOL = {
 }
 
 
-def run_tool(name: str, args: dict) -> str:
+def run_tool(name: str, args: dict) -> tuple[str, bool]:
+    """Execute a tool call. Returns (content, is_error).
+
+    Uses ``exec_detailed`` rather than ``exec`` so a non-zero shell exit
+    flows back to the model as an error tool result instead of raising
+    ``TroveExecError`` and crashing the loop. Letting the model see
+    `[exit N]` + stderr lets it self-correct (try a different path,
+    quote the filename, etc.) on the next turn.
+    """
     if name == "bash":
-        return trove.exec(args["command"])
+        r = trove.exec_detailed(args["command"])
+        if r.exit_code == 0:
+            return r.stdout, False
+        return f"[exit {r.exit_code}]\n{r.stderr}".rstrip(), True
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -139,17 +152,16 @@ def run_agent(user_prompt: str) -> str:
         # Feed tool results back and continue the loop.
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         messages.append({"role": "assistant", "content": response.content})
-        messages.append({
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": run_tool(tu.name, tu.input),
-                }
-                for tu in tool_uses
-            ],
-        })
+        tool_results = []
+        for tu in tool_uses:
+            content, is_error = run_tool(tu.name, tu.input)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tu.id,
+                "content": content,
+                "is_error": is_error,
+            })
+        messages.append({"role": "user", "content": tool_results})
 
 
 # ── 5. Tie it together ────────────────────────────────────────────────────────

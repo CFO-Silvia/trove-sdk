@@ -62,9 +62,16 @@ def bash(command: str) -> str:
         command: Shell command to execute.
 
     Returns:
-        Command stdout/stderr as plain text.
+        Command stdout on success; ``[exit N]\\n<stderr>`` on failure so
+        the model can read the error and self-correct on the next turn.
     """
-    return trove.exec(command)
+    # exec_detailed so a non-zero shell exit comes back as text the model
+    # can read, rather than raising TroveExecError through agno's tool
+    # wrapper.
+    r = trove.exec_detailed(command)
+    if r.exit_code == 0:
+        return r.stdout
+    return f"[exit {r.exit_code}]\n{r.stderr}".rstrip()
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
