@@ -4,7 +4,7 @@ from typing import BinaryIO, Sequence
 
 import httpx
 
-from .exceptions import TroveError, raise_for_response
+from .exceptions import TroveError, TroveExecError, raise_for_response
 from .models import (
     BytesContent,
     ExecResult,
@@ -130,25 +130,31 @@ class TroveClient:
         )
 
     def exec(self, command: str, *, stdin: str | None = None) -> str:
-        """Run a shell command in the workspace. Returns stdout (or error output).
+        """Run a shell command and return its stdout.
 
-        For agent loops where you need to branch on exit code or read stderr
-        cleanly, prefer :meth:`exec_detailed` — this method preserves the
-        legacy text response (`[exit N]\nstderr\nstdout` on non-zero) for
-        backwards compatibility.
+        Convenience wrapper around :meth:`exec_detailed` for the common
+        "happy path returns text" case. Raises :class:`TroveExecError` on
+        non-zero exit (the exception carries `exit_code`, `stdout`, and
+        `stderr`), so a failed command never silently looks like a string
+        of normal output.
+
+        Use :meth:`exec_detailed` directly when you want to branch on
+        exit codes without the exception, or :meth:`exec_chain` when
+        multiple steps need to share `cwd` / shell variables.
 
         ``stdin`` is piped to the spawned shell as UTF-8. None == /dev/null.
         Server caps the payload at 1 MB; for binary input, ``upload`` then
         redirect from disk in the command string (``"jq . < workspace/x"``).
-        Requires server capability ``exec.stdin`` — older servers ignore the
-        field.
         """
-        body: dict = {"command": command}
-        if stdin is not None:
-            body["stdin"] = stdin
-        resp = self._http.post("/exec", json=body)
-        _raise_for(resp)
-        return resp.text
+        result = self.exec_detailed(command, stdin=stdin)
+        if result.exit_code != 0:
+            raise TroveExecError(
+                command=command,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        return result.stdout
 
     def exec_detailed(self, command: str, *, stdin: str | None = None) -> ExecResult:
         """Run a shell command and return structured output.
@@ -369,12 +375,20 @@ class AsyncTroveClient:
         )
 
     async def exec(self, command: str, *, stdin: str | None = None) -> str:
-        body: dict = {"command": command}
-        if stdin is not None:
-            body["stdin"] = stdin
-        resp = await self._http.post("/exec", json=body)
-        _raise_for(resp)
-        return resp.text
+        """Run a shell command and return its stdout.
+
+        Async mirror of :meth:`TroveClient.exec`. Raises
+        :class:`TroveExecError` on non-zero exit.
+        """
+        result = await self.exec_detailed(command, stdin=stdin)
+        if result.exit_code != 0:
+            raise TroveExecError(
+                command=command,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        return result.stdout
 
     async def exec_detailed(self, command: str, *, stdin: str | None = None) -> ExecResult:
         body: dict = {"command": command}

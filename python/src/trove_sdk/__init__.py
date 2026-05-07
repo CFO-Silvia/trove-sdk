@@ -3,6 +3,7 @@ from .client import AsyncTroveClient, TroveClient
 from .exceptions import (
     TroveAuthError,
     TroveError,
+    TroveExecError,
     TroveNotFoundError,
     TroveRateLimitError,
     TroveServerError,
@@ -32,6 +33,7 @@ __all__ = [
     "AsyncTroveAdminClient",
     "TroveError",
     "TroveAuthError",
+    "TroveExecError",
     "TroveNotFoundError",
     "TroveRateLimitError",
     "TroveServerError",

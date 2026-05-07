@@ -191,11 +191,11 @@ piping into `jq` or downstream tools.
 from trove_sdk import TroveClient
 
 with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
-    # Run shell commands
-    client.exec("mkdir -p workspace/data")
+    # Simple case: returns stdout, raises TroveExecError on non-zero exit.
     output = client.exec("ls workspace/")
 
-    # Structured exec for agent loops — separate stdout/stderr + exit code.
+    # Branch on exit code without an exception: exec_detailed returns
+    # ExecResult(exit_code, stdout, stderr, duration_ms).
     result = client.exec_detailed("pytest tests/")
     if result.exit_code != 0:
         print("failures on stderr:", result.stderr)
@@ -386,8 +386,8 @@ A minimal subscribe + verify script lives in
 
 | Method | Description |
 |--------|-------------|
-| `exec(command, *, stdin=None)` | Run a shell command. Returns stdout as a string (legacy text response). |
-| `exec_detailed(command, *, stdin=None)` | Run a shell command. Returns `ExecResult(exit_code, stdout, stderr, duration_ms)`. |
+| `exec(command, *, stdin=None)` | Run a shell command. Returns `stdout` as a string on success, raises `TroveExecError(command, exit_code, stdout, stderr)` on non-zero exit. The simple, safe default. |
+| `exec_detailed(command, *, stdin=None)` | Run a shell command and inspect the full result without exceptions. Returns `ExecResult(exit_code, stdout, stderr, duration_ms)`. Use when you want to branch on exit code or measure duration. |
 | `exec_chain(commands, *, stdin=None)` | Run a list of commands in one shell, joined with `&&`. Returns `ExecResult`. Use when steps need to share `cwd` / variables. |
 | `write(path, content)` | Write a UTF-8 text file. Returns `FileResult`. |
 | `upload(path, data)` | Upload bytes or a file-like object. Returns `FileResult`. |
@@ -450,6 +450,12 @@ match on integers:
 | 408, 504 | `TroveTimeoutError` |
 | 429 | `TroveRateLimitError` |
 | 5xx | `TroveServerError` |
+
+`TroveExecError` is also a `TroveError` subclass but represents a *shell*
+failure (the HTTP request succeeded, the command exited non-zero). It carries
+`command`, `exit_code`, `stdout`, and `stderr`; `status_code` is `None`. Raised
+by `exec()` — use `exec_detailed()` when you'd rather inspect the exit code
+than catch.
 
 ```python
 from trove_sdk import TroveRateLimitError, TroveAuthError

@@ -9,6 +9,7 @@ from trove_sdk import (
     TroveAuthError,
     TroveClient,
     TroveError,
+    TroveExecError,
     TroveNotFoundError,
     TroveRateLimitError,
     TroveServerError,
@@ -21,20 +22,55 @@ BASE = "https://api.trovefiles.dev"
 
 @respx.mock
 def test_exec_returns_stdout():
-    respx.post(f"{BASE}/exec").mock(return_value=httpx.Response(200, text="hello\n"))
+    respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={"exit_code": 0, "stdout": "hello\n", "stderr": "", "duration_ms": 1},
+        )
+    )
     with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
         assert c.exec("echo hello") == "hello\n"
 
 
 @respx.mock
 def test_exec_raises_on_error():
-    respx.post(f"{BASE}/exec").mock(
+    respx.post(f"{BASE}/v1/exec").mock(
         return_value=httpx.Response(401, json={"detail": "Invalid API key"})
     )
     with TroveClient("trove-sk-bad", "ns", base_url=BASE) as c:
         with pytest.raises(TroveError) as exc_info:
             c.exec("echo hi")
     assert exc_info.value.status_code == 401
+
+
+@respx.mock
+def test_exec_raises_trove_exec_error_on_nonzero_exit():
+    """A 200 response with a non-zero exit_code should raise TroveExecError
+    with the captured stdout/stderr — the old behavior of returning a
+    `[exit N]\\n…` text blob silently was the footgun this fixed."""
+    respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "exit_code": 2,
+                "stdout": "partial\n",
+                "stderr": "boom\n",
+                "duration_ms": 7,
+            },
+        )
+    )
+    with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
+        with pytest.raises(TroveExecError) as exc_info:
+            c.exec("kaboom")
+    err = exc_info.value
+    assert err.exit_code == 2
+    assert err.stdout == "partial\n"
+    assert err.stderr == "boom\n"
+    assert err.command == "kaboom"
+    # Subclasses TroveError so existing `except TroveError:` blocks keep working.
+    assert isinstance(err, TroveError)
+    # status_code is None — this is a shell failure, not an HTTP failure.
+    assert err.status_code is None
 
 
 @respx.mock
@@ -95,7 +131,12 @@ def test_delete():
 
 @respx.mock
 def test_context_manager_closes():
-    respx.post(f"{BASE}/exec").mock(return_value=httpx.Response(200, text="ok"))
+    respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={"exit_code": 0, "stdout": "ok", "stderr": "", "duration_ms": 1},
+        )
+    )
     client = TroveClient("trove-sk-test", "ns", base_url=BASE)
     with client as c:
         c.exec("echo ok")
@@ -190,11 +231,15 @@ def test_exec_detailed_forwards_stdin():
 
 
 @respx.mock
-def test_exec_legacy_forwards_stdin():
-    """The legacy /exec endpoint also accepts stdin once the server is upgraded."""
+def test_exec_forwards_stdin_via_v1():
+    """`exec()` now goes through /v1/exec (it's a thin wrapper over
+    `exec_detailed`), so stdin must reach the structured endpoint."""
     import json as _j
-    route = respx.post(f"{BASE}/exec").mock(
-        return_value=httpx.Response(200, text="ok\n")
+    route = respx.post(f"{BASE}/v1/exec").mock(
+        return_value=httpx.Response(
+            200,
+            json={"exit_code": 0, "stdout": "ok\n", "stderr": "", "duration_ms": 1},
+        )
     )
     with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:
         c.exec("cat", stdin="payload")
@@ -440,7 +485,7 @@ def test_clear_init_returns_false_when_absent():
     ],
 )
 def test_status_codes_raise_specific_subclass(status, cls):
-    respx.post(f"{BASE}/exec").mock(
+    respx.post(f"{BASE}/v1/exec").mock(
         return_value=httpx.Response(status, json={"detail": "boom"})
     )
     with TroveClient("trove-sk-test", "ns", base_url=BASE) as c:

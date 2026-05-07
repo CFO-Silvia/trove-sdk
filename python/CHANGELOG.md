@@ -2,6 +2,47 @@
 
 All notable changes to the `trove-sdk` Python package.
 
+## 0.8.0 — 2026-05-07
+
+### Fixed — `exec_chain` now actually persists `cwd`/`export`/vars
+
+- 0.7.6 wrapped each step in `( ... )`, which spawns a subshell — so the
+  documented "cwd and variables hold for the whole chain" guarantee was
+  silently false. The README's flagship example (`cd workspace/data`,
+  capture `TOKEN`, `curl -H "Authorization: $TOKEN"`) shipped an empty
+  `TOKEN` and wrote outputs to the wrong directory.
+- Switched to brace groups `{ ... ; }` — same parse-boundary safety against
+  internal `&&` / `||` in a step, but no subshell, so state actually
+  persists. Verified end-to-end against the live API: `cd`, shell vars,
+  and `export` all carry through every step of the chain.
+- Existing unit tests asserted the buggy `( ... )` shape and so passed
+  while production failed; updated them, and added an integration-style
+  test that runs the joined string through a real bash so a future
+  regression to subshells gets caught by execution rather than string
+  comparison.
+
+### Changed — `exec()` no longer returns a confused error blob
+
+`exec()` is now a thin convenience wrapper around `exec_detailed()`:
+
+- **Success**: returns `stdout` as a `str` (unchanged for happy-path callers).
+- **Non-zero exit**: raises a new `TroveExecError(command, exit_code, stdout, stderr)`
+  instead of silently returning the legacy `[exit N]\n<stderr>\n<stdout>` text
+  blob. That blob was an easy footgun — feeding `client.exec(...)` straight to a
+  model meant the model saw a string of "normal output" with the failure mixed in.
+- **Implementation**: routes through `POST /v1/exec` (the structured endpoint),
+  same as `exec_detailed`. Both endpoints continue to work server-side; the SDK
+  just stops surfacing the legacy text format.
+
+`TroveExecError` subclasses `TroveError`, so existing `except TroveError:`
+blocks keep catching shell failures. Its `status_code` is `None` (this is a
+shell exit, not an HTTP failure) — read `exit_code` instead.
+
+**Migration**: any caller that was inspecting the `[exit N]…` text on failure
+needs to switch to `try/except TroveExecError` (recommended) or call
+`exec_detailed()` and read `result.exit_code` directly. Calls that only ever
+read `stdout` on the success path are unaffected.
+
 ## 0.7.6 — 2026-05-07
 
 ### Added — `exec_chain(commands)`

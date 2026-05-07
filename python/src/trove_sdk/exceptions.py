@@ -29,6 +29,29 @@ class TroveServerError(TroveError):
     """5xx — generic server-side failure."""
 
 
+class TroveExecError(TroveError):
+    """A shell command ran but exited non-zero.
+
+    Distinct from HTTP errors (the request itself succeeded). Holds the
+    captured `stdout` and `stderr` so callers can inspect or re-raise with
+    context. The `status_code` field is `None` — use `exit_code` for the
+    shell exit instead.
+    """
+
+    def __init__(self, command: str, exit_code: int, stdout: str, stderr: str):
+        snippet = (stderr.strip() or stdout.strip() or "<no output>")
+        if len(snippet) > 200:
+            snippet = snippet[:200] + "…"
+        super().__init__(
+            f"command failed (exit {exit_code}): {snippet}",
+            status_code=None,
+        )
+        self.command = command
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 _STATUS_TO_CLASS: dict[int, type[TroveError]] = {
     401: TroveAuthError,
     403: TroveAuthError,

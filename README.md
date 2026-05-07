@@ -32,6 +32,8 @@ with TroveClient(api_key="trove-sk-...", namespace="alice") as client:
     print(client.exec("awk -F, 'NR>1{print $2}' workspace/data.csv"))
 ```
 
+> **`exec()` returns `stdout` on success and raises `TroveExecError` on non-zero exit** (the exception carries `exit_code`, `stdout`, and `stderr`). When you'd rather branch on the exit code without an exception, use `exec_detailed()` — it returns the full `ExecResult(exit_code, stdout, stderr, duration_ms)`.
+
 ## Persistent shell context
 
 Tired of prefixing every `exec` with `cd workspace/data && source .venv/bin/activate && ...`? Set the namespace's init script once — the exec endpoint sources it before every command, and it survives across agent process restarts because it lives in the namespace volume.
