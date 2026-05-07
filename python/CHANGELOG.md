@@ -2,7 +2,7 @@
 
 All notable changes to the `trove-sdk` Python package.
 
-## 0.7.3 — 2026-05-06
+## 0.7.4 — 2026-05-06
 
 ### Added — Persistent shell context
 
@@ -14,6 +14,8 @@ All notable changes to the `trove-sdk` Python package.
   Replaces the "prefix every command with `cd ... && source ... && ...`"
   pattern. Requires a server that honors the convention; older servers
   store the file but won't source it.
+
+## 0.7.3 — 2026-05-06
 
 ### Added — MCP server
 
