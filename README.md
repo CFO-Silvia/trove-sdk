@@ -1,6 +1,6 @@
 # trove-sdk
 
-Client libraries for [Trove](https://trovefiles.dev) — files and commands for AI agents.
+Client libraries for [TroveFiles](https://trovefiles.dev) — files and commands for AI agents.
 
 ```bash
 pip install trove-sdk                # client only
@@ -9,6 +9,8 @@ pip install 'trove-sdk[cli,mcp]'     # + MCP server for Claude Desktop, Cursor, 
 ```
 
 Python 3.10+. See [`python/README.md`](./python/README.md) for the full SDK + CLI + MCP docs.
+
+The SDK is MIT-licensed (see [`LICENSE`](./LICENSE)). Use of the SDK requires a [TroveFiles account](https://trovefiles.dev/sign-up); free tier and paid plans at [trovefiles.dev/pricing](https://trovefiles.dev/pricing). See [`NOTICE.md`](./NOTICE.md) for the relationship between the SDK license and the TroveFiles Terms of Service.
 
 ## What is Trove?
 
